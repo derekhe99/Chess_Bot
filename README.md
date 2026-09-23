@@ -11,8 +11,14 @@ for the research framing.
 
 ## Status
 Step 0 -- Setup. Scaffold created. Still open: GitHub remote for this repo,
-Colab Pro (not needed until Step 6), a Hugging Face token, and the exact
-model checkpoint. See `notebooks/00_setup.ipynb`.
+Colab Pro (not needed until Step 6), and a Hugging Face token. See
+`notebooks/00_setup.ipynb`.
+
+## Model
+`Qwen/Qwen3-0.6B` (Apache-2.0). Baseline runs non-thinking
+(`enable_thinking=False`); the optional chain-of-thought stretch arm can
+flip that flag on the same checkpoint later, no model swap needed. See
+`chess_ai_implementation_plan.md` Section 0 for the full rationale.
 
 ## Structure
 - `engine/` -- chess rules, move vocabulary, board encodings, Stockfish wrapper
