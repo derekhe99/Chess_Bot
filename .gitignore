@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+data/raw/
+data/processed/
+*.parquet
+checkpoints/
+*.pt
+*.ckpt
+.env
+*.token
+wandb/
+.DS_Store

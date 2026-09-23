@@ -1,0 +1,7 @@
+# Paths, seed, GPU type, compute budget.
+# TODO: fill in during Step 0/6 (see plan Sec 1, Sec 6).
+seed: null
+gpu_type: null        # must match every reported run, e.g. "L4"
+compute_budget_gpu_hours: null
+drive_root: null
+repo_root: null
