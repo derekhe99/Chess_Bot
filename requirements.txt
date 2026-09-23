@@ -1,0 +1,12 @@
+python-chess
+torch
+transformers
+peft
+accelerate
+datasets
+huggingface_hub
+zstandard
+pandas
+pyarrow
+pyyaml
+# wandb  # optional experiment dashboards

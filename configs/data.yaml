@@ -1,0 +1,5 @@
+# Dataset size, phase mix, Stockfish label depth.
+# TODO: exact parameter set not yet locked -- see plan Sec 5, "Next alignment points".
+num_positions: null
+phase_mix: null        # opening / middlegame / endgame split
+stockfish_label_depth: null
