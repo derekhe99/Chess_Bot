@@ -9,4 +9,7 @@ zstandard
 pandas
 pyarrow
 pyyaml
+numpy
+psutil
+pytest
 # wandb  # optional experiment dashboards

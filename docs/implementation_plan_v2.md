@@ -1,7 +1,7 @@
 # Chess AI — Implementation Plan v2 (Level 1 / Level 2)
 
 **Version:** v2, Sep 23, 2026. Supersedes v1 (archived outside the repo at `ChessAI/archive/chess_ai_implementation_plan_v1.md`).
-**Changes from v1:** Stockfish download corrected to the Stockfish 19 `universal` build (Sec 3.2); repo tree updated to `Chess_Bot/` with `CLAUDE.md` and `docs/` (Sec 2).
+**Changes from v1:** Stockfish download corrected to the Stockfish 19 `universal` build (Sec 3.2); repo tree updated to `Chess_Bot/` with `CLAUDE.md` and `docs/` (Sec 2); board orientation decided (Sec 0, Step 9).
 **Source:** Framing_Docs_updated.docx, the project plan, and the architecture map v2
 **Scope:** Infrastructure, repo structure, dependencies, and execution order. Pseudocode and the modularity/config design come next.
 
@@ -18,6 +18,7 @@ These decisions are already made. Everything below depends on them.
 | Board representation toggle | FEN text vs. structured text (piece-per-square tokens). No image input. |
 | LLM design | Phase 1: 2x2 (mask × representation), all trained with SFT warm-start + RL. Phase 2: best combo retrained under all 3 regimes (self-play RL only / SFT only / SFT + RL). |
 | AlphaZero | Small CNN policy-value net + MCTS, pure self-play |
+| Board orientation | **LLM arms never flip**: they see absolute FEN/UCI, matching the notation the pretrained model learned from. **AlphaZero flips**: the CNN always sees the position from the side to move (board mirrored + colors swapped when Black moves), the standard AlphaZero practice, so it learns one set of patterns for both colors instead of two. Not flipping would handicap the AlphaZero arm's sample efficiency and bias the comparison against it. The Step 1 move vocabulary and planes stay absolute; the flip is a thin layer added in Step 9. |
 | Terminology | **Game** = one full game. **Round** = a batch of self-play games (e.g., 50 games), followed by one training update. SFT has no rounds; it trains on a static dataset. |
 | Eval | Rated only against fixed anchors: Stockfish at limited strength levels plus weak anchors below its ~1320 floor |
 | Compute accounting | GPU-hours (train + inference) as the shared currency. Stockfish labeling CPU time is charged to SFT and warm-start. Inference compute per move is capped in eval. |
@@ -222,7 +223,7 @@ Start from the SFT checkpoint (warm-start) and confirm Elo improves over the SFT
 Run all 4 combos (mask × representation) under SFT + RL at equal budget, 2–3 seeds each. Pick the best combo.
 
 **Step 9 — AlphaZero arm** (`model/az_net.py`, `search/mcts.py`, `train/az_train.py`, `05_train_alphazero.ipynb`)
-Start with `tests/test_mcts.py` (mate-in-1), then run parallel self-play training at the same budget, 2–3 seeds. This is independent of Steps 7–8, so it can run in a separate session alongside them.
+Start with `tests/test_mcts.py` (mate-in-1), then run parallel self-play training at the same budget, 2–3 seeds. Before training, add side-to-move flipping for the CNN (Sec 0, Board orientation): mirror the board with `board.mirror()` before `to_planes`, and map the network's move outputs back through a fixed 1968-entry mirror table (e.g. `e7e5` ↔ `e2e4`); flip the stored search policies the same way. Add a test that flipping twice returns the original position and move, and that flipped legal masks still match python-chess. This is independent of Steps 7–8, so it can run in a separate session alongside them.
 
 **Step 10 — LLM Phase 2: regime comparison**
 Retrain the best combo under pure self-play RL, SFT only, and SFT + RL at equal budget, 2–3 seeds each.

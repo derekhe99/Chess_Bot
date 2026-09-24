@@ -11,3 +11,6 @@ checkpoints/
 *.token
 wandb/
 .DS_Store
+# Stockfish binary + tarball downloaded by 00_setup.ipynb (~80MB, never commit)
+stockfish/
+stockfish.tar.gz

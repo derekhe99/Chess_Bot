@@ -78,3 +78,6 @@ Rules:
 - **Colab**: `%cd` persists across cells (hence the absolute `REPO_DIR` clone guard);
   "Restart session" does NOT wipe `/content` ("Disconnect and delete runtime" does);
   a missing `nvidia-smi` means the runtime isn't set to GPU.
+- **Stockfish is pinned to 19** (`SF_VERSION = "sf_19"` in `00_setup.ipynb`, which asserts
+  the version). Labels and eval anchors depend on the exact engine; never upgrade it
+  without discussing it first.
