@@ -15,6 +15,7 @@ Main pieces:
 - RatingEstimate -- one player's rating, CI, record, and an "off the scale" flag
 - pairs_needing_games -- the adaptive-game-count rule for freezing a member:
                     which matchups need more games before its rating is trusted
+                    (95% CI still too wide -> more games)
 
 Elo-vs-samples and Elo-vs-compute curves (plan Sec 4) are just fit_with_ci run
 once per checkpoint; the plotting lives in the analysis notebook.
@@ -230,8 +231,7 @@ def fit_with_ci(results: Sequence[Result], fixed: dict[str, float], *, n_boot: i
 
 
 def pairs_needing_games(estimates: dict[str, RatingEstimate], results: Sequence[Result],
-                        candidates: Iterable[str], *, ci_half_width: float = 100.0,
-                        score_band: tuple[float, float] = (0.2, 0.8)) -> set[frozenset]:
+                        candidates: Iterable[str], *, ci_half_width: float = 100.0) -> set[frozenset]:
     """The adaptive rule (plan v3, Step 5): which matchups need more games.
 
     Inputs:
@@ -239,32 +239,22 @@ def pairs_needing_games(estimates: dict[str, RatingEstimate], results: Sequence[
       results       -- the games so far
       candidates    -- players being rated for freezing (the rule only looks at their matchups)
       ci_half_width -- target: a candidate's 95% CI must be no wider than +/- this
-      score_band    -- a candidate scoring outside this range against one opponent
-                       makes that matchup lopsided (lopsided scores pin a rating poorly)
     Output: set of matchups (frozenset of the two names) that need more games.
             Empty set = done.
 
-    Core logic: a candidate whose CI is too wide, or whose rating is flagged off
-    the scale, needs more games in ALL its matchups. A candidate that is fine
-    overall but lopsided against one opponent needs more games in THAT matchup.
+    Core logic: a candidate whose 95% CI is still wider than the target, or whose
+    rating is flagged off the scale, needs more games in ALL its matchups; a
+    candidate that meets the target needs none. The CI is the only test because
+    it measures the thing we care about -- is the number precise enough to
+    freeze. Lopsided matchups (e.g. 90/10) do need more games, but that already
+    shows up as a wider CI. A separate "score must be 20-80%" rule was dropped:
+    a genuinely large gap never meets it, however many games are played.
     """
-    lo_band, hi_band = score_band
-    points: dict[tuple[str, frozenset], list[float]] = defaultdict(list)
-    for w, b, s in results:
-        pair = frozenset((w, b))
-        points[(w, pair)].append(s)
-        points[(b, pair)].append(1.0 - s)
-
     need = set()
     for c in candidates:
         est = estimates[c]
-        too_wide = est.at_bound is not None or (est.ci_high - est.ci_low) / 2 > ci_half_width
-        for (player, pair), pts in points.items():
-            if player != c:
-                continue
-            score = sum(pts) / len(pts)
-            if too_wide or not lo_band <= score <= hi_band:
-                need.add(pair)
+        if est.at_bound is not None or (est.ci_high - est.ci_low) / 2 > ci_half_width:
+            need |= {frozenset((w, b)) for w, b, _ in results if c in (w, b)}
     return need
 
 

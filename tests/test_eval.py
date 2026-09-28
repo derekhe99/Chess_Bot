@@ -92,33 +92,41 @@ def test_bootstrap_ci_brackets_truth():
     assert est.games == 400 and 0 < est.score < 1
 
 
-def test_adaptive_rule_flags_wide_ci_and_lopsided_pairs():
+def test_adaptive_rule_is_ci_only():
     rng = np.random.default_rng(3)
     fixed = {"a": 1400.0, "b": 1600.0}
     # few games -> wide CI -> every matchup of the candidate needs more
     few = simulate("c", 1500, "a", 1400, 20, rng) + simulate("c", 1500, "b", 1600, 20, rng)
     est = fit_with_ci(few, fixed, n_boot=200)
     assert pairs_needing_games(est, few, ["c"]) == {frozenset(("c", "a")), frozenset(("c", "b"))}
-    # many games -> tight CI; a matchup inside the score band is done
+    # many games -> tight CI -> done
     many = simulate("c", 1500, "a", 1400, 400, rng) + simulate("c", 1500, "b", 1600, 400, rng)
     est = fit_with_ci(many, fixed, n_boot=200)
     assert pairs_needing_games(est, many, ["c"]) == set()
-    # tight CI, but lopsided against one opponent -> only that matchup needs more
-    lop = simulate("c", 1500, "a", 1000, 400, rng) + simulate("c", 1500, "b", 1600, 400, rng)
-    est = fit_with_ci(lop, {"a": 1000.0, "b": 1600.0}, n_boot=200)
-    assert pairs_needing_games(est, lop, ["c"]) == {frozenset(("c", "a"))}
+    # lopsided (~90/10 vs "a") but the CI is tight -> done: a big gap is not a reason for more games
+    lop = simulate("c", 1500, "a", 1100, 400, rng) + simulate("c", 1500, "b", 1600, 400, rng)
+    est = fit_with_ci(lop, {"a": 1100.0, "b": 1600.0}, n_boot=200)
+    assert est["c"].score > 0.6 and (est["c"].ci_high - est["c"].ci_low) / 2 < 100
+    assert pairs_needing_games(est, lop, ["c"]) == set()
+
+
+def test_adaptive_rule_never_accepts_an_off_scale_rating():
+    sweep = [("c", "a", 1.0)] * 10                         # won everything -> rating has no upper bound
+    est = fit_with_ci(sweep, {"a": 1400.0}, n_boot=50)
+    assert est["c"].at_bound == "upper"
+    assert pairs_needing_games(est, sweep, ["c"], ci_half_width=1e9) == {frozenset(("c", "a"))}
 
 
 def test_rate_adaptively_stops_when_done_and_at_the_cap():
     agents = {"r1": RandomAgent("r1", seed=1), "r2": RandomAgent("r2", seed=2)}
-    # unreachable score band -> keeps adding games until the cap, then reports it
+    # impossible target (negative CI width) -> keeps adding games until the cap, then reports it
     _, recs, log = rate_adaptively(agents, [("r1", "r2")], {"r1": 300.0}, ["r2"], start_games=4, step_games=2,
-                                   max_games_per_pair=8, score_band=(0.9, 1.0), n_boot=20, verbose=False,
+                                   max_games_per_pair=8, ci_half_width=-1.0, n_boot=20, verbose=False,
                                    max_plies=20)
     assert len(recs) == 8 and log[-1]["capped"] == ["r1-r2"]
     # generous target -> stops after the first batch
     _, recs, log = rate_adaptively(agents, [("r1", "r2")], {"r1": 300.0}, ["r2"], start_games=4, ci_half_width=1e9,
-                                   score_band=(0.0, 1.0), n_boot=20, verbose=False, max_plies=20)
+                                   n_boot=20, verbose=False, max_plies=20)
     assert len(recs) == 4 and len(log) == 1
 
 

@@ -11,6 +11,8 @@
 5. **Dollar cost** (Sec 0 Compute accounting row, `budget.py`, Steps 6 and 11): hours are converted at a pinned market rental rate (not the Colab bill). Reported as dollars to reach a given Elo, inference cost per game, and amortized training cost per game.
 6. **Step 2 gate reduced** to what can be measured before any model exists.
 
+**In-place edit, Sep 27, 2026:** the adaptive game-count rule now stops on the 95% CI alone; the "score must be 20–80%" trigger was dropped (Step 5, *Adaptive game counts*).
+
 **Scope:** Infrastructure, repo structure, dependencies, and execution order. Pseudocode and the modularity/config design come next.
 
 ---
@@ -224,7 +226,7 @@ Train one config (FEN + masking on) on a small slice, evaluate the checkpoints i
 **Freeze checkpoint rungs** (completes the reference set). Pick ~3 of the checkpoints training already saves to fill the gap between greedy and Stockfish 1320:
 - **Selection (tentative; Derek may revise this later):** pick **by strength, not by training step**. Score the saved checkpoints quickly and choose ones spread evenly through the gap, so neighboring rungs score 20–80% against each other (about 150–300 Elo apart). Fixed step intervals would bunch the rungs together, because learning is fast early and slow late.
 - **How many:** enough that no gap between neighbors exceeds ~300 Elo; 3 is the starting guess.
-- **Adaptive game counts:** start at 20 games per neighbor pair; add games only if the rung's 95% CI is wider than ±100 Elo, or it scored below 20% or above 80% against a neighbor.
+- **Adaptive game counts:** start at 20 games per neighbor pair; add 20 more to every matchup of a rung whose 95% CI is still wider than ±100 Elo (or whose rating is off the scale), up to a cap of 100 games per matchup. A matchup that hits the cap is reported for a manual call, not frozen silently. Why the CI alone: lopsided matchups do need more games, but that already shows up as a wider CI; a separate "score must be 20–80%" rule can never be met by a genuinely large gap, so it would only burn games to the cap. The CI matters here beyond absolute numbers: each rung's error lands in the spacing between rungs, and so in the shape of the Elo-vs-training curve.
 - **Freezing:** record the rating, hash the weights, lock the play settings (always the top legal move), and never retrain or re-rate it. Random and greedy get their ratings in the same fit, through the new rungs.
 - **Known bias:** checkpoint rungs play like an LLM, which may slightly favor the LLM arms. The non-LLM members keep this in check (Step 9 can add an AlphaZero rung).
 

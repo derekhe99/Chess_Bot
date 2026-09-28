@@ -213,7 +213,7 @@ def summarize(records: list[GameRecord], name: str) -> dict:
 def rate_adaptively(agents: dict[str, Agent], pairs: list[tuple[str, str]], fixed: dict[str, float],
                     candidates: list[str], *, start_games: int = 20, step_games: int = 20,
                     max_games_per_pair: int = 100, ci_half_width: float = 100.0,
-                    score_band: tuple[float, float] = (0.2, 0.8), n_boot: int = 1000, seed: int = 0,
+                    n_boot: int = 1000, seed: int = 0,
                     verbose: bool = True, **match_kwargs) -> tuple[dict[str, RatingEstimate], list[GameRecord], list[dict]]:
     """Rate new reference-set members, adding games only where they're needed (plan v3, Step 5).
 
@@ -225,7 +225,8 @@ def rate_adaptively(agents: dict[str, Agent], pairs: list[tuple[str, str]], fixe
       start_games        -- games per matchup in the first batch (plan: 20)
       step_games         -- games added to a matchup each time it needs more
       max_games_per_pair -- cap; a matchup never goes past this
-      ci_half_width, score_band -- the stopping rule, see elo.pairs_needing_games
+      ci_half_width      -- stopping rule: each candidate's 95% CI within +/- this
+                            (see elo.pairs_needing_games)
     Output: (estimates for all non-fixed players, every game record,
              a log with one entry per batch: games per matchup so far + matchups still short)
 
@@ -255,8 +256,7 @@ def rate_adaptively(agents: dict[str, Agent], pairs: list[tuple[str, str]], fixe
                 s = summarize(games, x)
                 print(f"  batch {round_no}: {x} vs {y} +{n} games -> {s['wins']}W {s['draws']}D {s['losses']}L for {x}")
         estimates = fit_with_ci(to_results(records), fixed, n_boot=n_boot, seed=seed)
-        short = pairs_needing_games(estimates, to_results(records), candidates,
-                                    ci_half_width=ci_half_width, score_band=score_band)
+        short = pairs_needing_games(estimates, to_results(records), candidates, ci_half_width=ci_half_width)
         capped = sorted(tuple(sorted(k)) for k in short if played[k] >= max_games_per_pair)
         log.append({"batch": round_no, "games": {"-".join(by_key[k]): v for k, v in played.items()},
                     "short": sorted("-".join(sorted(k)) for k in short), "capped": ["-".join(c) for c in capped]})
