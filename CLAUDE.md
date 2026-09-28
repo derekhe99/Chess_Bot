@@ -53,7 +53,12 @@ Rules:
   sf_1500 = 1580 [1500, 1673], sf_1700 = 1731 [1654, 1834] (160 games each, sf_1320
   pinned at 1320, 0.1 s/move). Both land above nominal -- a finding, not an error.
   Adaptive game counts stop on the 95% CI alone (plan v3, Step 5).
-- Next: Step 3 (`data/`, `notebooks/01_build_dataset.ipynb`) on branch `step-3-data`.
+- Step 3 (`data/`, `tests/test_data.py`, `notebooks/01_build_dataset.ipynb`) — built on
+  branch `step-3-data`: one Lichess month (`configs/data.yaml`, checked against Lichess's
+  sha256), one position per phase per game with dedup, Stockfish labels at fixed depth in
+  resumable Parquet chunks with CPU time logged, `dataset.py` yields plain records (the
+  prompt is Step 4's). 78 tests pass locally. Next: run `01_build_dataset.ipynb` in Colab
+  (timing run, then full) for the gate.
 - Not wired up yet: `configs/base.yaml: drive_root` is unused; the setup notebook
   hardcodes `DRIVE_ROOT`. Resolve as part of the config-design alignment point.
 
