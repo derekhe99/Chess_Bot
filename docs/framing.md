@@ -1,13 +1,24 @@
 # Chess AI — Framing (research intent)
 
-Converted from `Framing_Docs_updated.docx` (Sep 23, 2026). This is Derek's framing of
-*why* the project exists and what it should teach; the implementation plan
-(`docs/implementation_plan_v2.md`) is *what* gets built and *how*. The `> Review note`
-lines are comments from the Sep 23 review, kept because they explain decisions the plan
-later locked in. **Where this doc and the plan differ, the plan wins** — it was written
-afterwards and incorporates these notes.
+**Version:** v2, Sep 24, 2026. **This file is now the canonical framing** and is edited
+directly. v1 was converted from `Framing_Docs_updated.docx` (Sep 23, 2026) and is archived
+at `ChessAI/archive/framing_v1.md`; the Word doc is no longer maintained and may lag this
+file.
 
-The Word document is the original; if it changes, re-convert this file.
+**Changes from v1:**
+1. **ELO:** a frozen reference set pinned to Stockfish 1320 replaces "Stockfish as the
+   global source of truth, plus a depth-1 anchor".
+2. **Training cost:** adds dollars at a market rental rate, including cost per game
+   (inference, and amortized training).
+3. **Legal-move scaffolding:** three consecutive illegal attempts on one move forfeits the
+   game; unmasked arms self-play unmasked, and their illegal-move rate over training is an
+   observed outcome.
+
+This is Derek's framing of *why* the project exists and what it should teach; the
+implementation plan (`docs/implementation_plan_v3.md`) is *what* gets built and *how*.
+The `> Review note` lines are comments from the Sep 23 review, kept because they explain
+decisions the plan later locked in. `> Update (v2)` lines mark what changed in this
+version. **Where this doc and the plan differ, the plan wins.**
 
 ---
 
@@ -39,6 +50,9 @@ More concretely, the learning outcomes are:
     > Review note: Worth distinguishing 'guaranteed' (constrained decoding/masking —
     > actually restricts output) from 'legal moves listed in context' (a hint the model can
     > still ignore). These test different things; the plan treats them as separate arms.
+    > Update (v2): An agent that makes three consecutive illegal attempts on one move
+    > forfeits the game, in eval and in self-play. Unmasked arms self-play unmasked, so
+    > whether RL makes illegal moves rarer is itself something to observe.
   - Visualize the board and piece positions in different ways — FEN vs structured board
     format
     > Review note: This only resolves once you pick pretrained vs. from-scratch (see your
@@ -57,13 +71,19 @@ More concretely, the learning outcomes are:
   > Elo) — that's the 4th metric, and the one SFT vs. pure self-play is expected to differ
   > on most.
   - Sample efficiency - # of games/positions needed to reach a given Elo
-  - ELO - use a "global" source of truth being Stockfish elo
+  - ELO - measured against a frozen reference set, pinned to Stockfish's weakest level
+    (UCI_Elo 1320 = 1320)
     > Review note: Gap: Stockfish's weakest setting is still ~1300+ Elo. Under-trained
     > early agents will likely lose 100% of games against it — no signal, no confidence
     > interval. Add fixed anchors below that floor: random mover, material-greedy player,
     > Stockfish capped at depth 1.
-    - Also add weak fixed anchors below Stockfish's floor (~1300+ elo): Stockfish capped
-      at depth 1
+    > Update (v2): In testing, Stockfish's own limits (depth, nodes, time) reached only
+    > ~150-200 Elo below 1320, and greedy lost every game even to the weakest variant. A
+    > free-floating rating pool would drift. So: pin Stockfish 1320, rate a starting set
+    > once and freeze it, then rate every new model against the frozen set.
+    - Reference set: Stockfish 1320 (pinned), Stockfish 1500 and 1700, random mover,
+      material-greedy player, and ~3 early SFT checkpoints that fill the gap below 1320
+    - Each new model is rated against the frozen set; only its own rating is fitted
   - Training cost - I am not sure how to factor in the MCTS compute cost here? Framework
     so far
     > Review note: Two separate leaks here: (1) Stockfish-labeling compute for
@@ -79,6 +99,9 @@ More concretely, the learning outcomes are:
       budget too, or it looks artificially cheap
     - Cap inference-time compute per move (time or node budget) in the eval harness, so
       AlphaZero's MCTS and the LLM's single forward pass are comparable
+    - Update (v2): also convert hours to dollars at a pinned market rental rate (not the
+      Colab bill). Report dollars to reach a given Elo, inference cost per game, and
+      amortized training cost per game at stated lifetime game counts
   - Inference time - how quickly to produce the output move
 
 ## Engineering
@@ -127,6 +150,8 @@ More concretely, the learning outcomes are:
           winning)
       - LLM (assumes legal moves + "correct" board representation but WLOG) - self-play
         only
+        > Update (v2): unmasked arms don't get guaranteed legal moves in self-play; see the
+        > legal-move scaffolding note above.
         - Forward pass:
           - Sequential game play
           - Receives reward signal at the end of the game only based on win-loss
@@ -158,6 +183,8 @@ More concretely, the learning outcomes are:
     > fastest way to validate the whole stack before sinking time into parallel MCTS.
     - get the LLM to run against various stockfish levels to determine an ELO and also use
       logs to track things like training cost and inference time
+      > Update (v2): rated against the frozen reference set (see ELO above), not
+      > Stockfish levels alone.
     - Run 2-3 seeds per RL arm; start with a small number of eval games per matchup and
       scale up later, rather than hundreds all at once
     - Sequencing: build the SFT-on-Stockfish baseline end-to-end first (data pipeline,

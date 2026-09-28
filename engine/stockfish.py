@@ -5,7 +5,7 @@ Two jobs:
    depth or node count. The evaluation is also converted to a win
    probability -- the SFT value target.
 2. Playing (``play``): a move at full strength, capped depth, or a limited
-   ``UCI_Elo`` -- the eval anchors.
+   ``UCI_Elo`` -- the Stockfish members of the eval reference set.
 
 It also tracks the CPU time the engine process has used (``cpu_seconds``) so
 labeling cost can be charged to the compute budget, per the plan.
@@ -22,6 +22,9 @@ from __future__ import annotations
 
 import os
 import shutil
+import tarfile
+import tempfile
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,9 +32,44 @@ import chess
 import chess.engine
 import psutil
 
-# Where notebooks/00_setup.ipynb puts the binary, relative to the repo root.
+# Pinned engine version (plan Sec 3.2): SFT labels and eval ratings depend on the
+# exact engine, so it never upgrades silently. Change only after discussing it.
+SF_VERSION = "sf_19"
+EXPECTED_ENGINE_NAME = "Stockfish 19"
+_ASSET = "stockfish-linux-x86-64-universal"
+
+# Where the binary lives, relative to the repo root (Colab: /content/Chess_Bot/stockfish/...).
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_DEFAULT_BINARY = _REPO_ROOT / "stockfish" / "stockfish-linux-x86-64-universal"
+_DEFAULT_BINARY = _REPO_ROOT / "stockfish" / _ASSET
+
+
+def ensure_stockfish(root: str | os.PathLike = _REPO_ROOT) -> str:
+    """Make sure the pinned Stockfish binary is present (download if not) and return its path.
+
+    Downloads the official Linux build for SF_VERSION into <root>/stockfish/,
+    then starts it once to confirm it reports EXPECTED_ENGINE_NAME. Safe to call
+    repeatedly -- it skips the ~80MB download when the binary already exists.
+    """
+    binary = Path(root) / "stockfish" / _ASSET
+    if not binary.is_file():
+        url = (f"https://github.com/official-stockfish/Stockfish/releases/download/"
+               f"{SF_VERSION}/{_ASSET}.tar.gz")
+        with tempfile.TemporaryDirectory() as tmp:
+            tarball = Path(tmp) / "stockfish.tar.gz"
+            urllib.request.urlretrieve(url, tarball)
+            with tarfile.open(tarball) as tf:
+                member = tf.getmember(f"stockfish/{_ASSET}")
+                try:
+                    tf.extract(member, root, filter="data")
+                except TypeError:  # Python < 3.12 without the extraction-filter backport
+                    tf.extract(member, root)
+        binary.chmod(0o755)
+    engine = chess.engine.SimpleEngine.popen_uci(str(binary))
+    name = engine.id.get("name", "")
+    engine.quit()
+    if name != EXPECTED_ENGINE_NAME:
+        raise RuntimeError(f"Expected {EXPECTED_ENGINE_NAME!r} (pinned {SF_VERSION}), found {name!r} at {binary}")
+    return str(binary)
 
 # Converts centipawns to a win probability. "lichess" is the logistic curve
 # Lichess uses for its win% display (the same formula DeepMind's
@@ -93,8 +131,8 @@ class Stockfish:
 
     @property
     def elo_range(self) -> tuple[int, int]:
-        """(min, max) UCI_Elo this Stockfish build accepts. Min is ~1320,
-        which is why the plan adds weaker anchors below it."""
+        """(min, max) UCI_Elo this Stockfish build accepts. Min is 1320,
+        which is why the eval reference set extends below it (eval/anchors.py)."""
         opt = self._engine.options["UCI_Elo"]
         return int(opt.min), int(opt.max)
 
@@ -111,7 +149,7 @@ class Stockfish:
             lo, hi = self.elo_range
             if not lo <= elo <= hi:
                 raise ValueError(f"UCI_Elo must be in [{lo}, {hi}], got {elo}. "
-                                 "Use the weak anchors in eval/anchors.py for lower ratings.")
+                                 "Ratings below that come from the reference set in eval/anchors.py.")
             self._engine.configure({"UCI_LimitStrength": True, "UCI_Elo": elo})
         self.elo = elo
 
