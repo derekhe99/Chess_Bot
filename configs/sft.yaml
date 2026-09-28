@@ -1,5 +1,4 @@
-# SFT hyperparameters.
-# TODO: fill in during Step 5 (learning rate, batch size, value_loss_type, lambda, ...).
+# SFT (Step 5): the LLM player's settings, then how it's trained on Stockfish labels.
 
 # The LLM player (Step 4, model/llm_policy.py -> PolicyConfig). Lives here because
 # RL (Step 7) continues from the SFT adapters, so the LoRA shape is set once, at SFT.
@@ -19,4 +18,22 @@ policy:
   prefix_cache: true             # run the prompt once and reuse it for every legal move
   max_new_tokens: 8              # unmasked: a UCI move is at most 5 characters
   retry_temperature: 1.0         # unmasked: sampling temperature after an illegal move (1st try is greedy)
+  seed: 0
+
+# Training (train/sft.py -> TrainConfig). Day-1 values agreed Sep 28, 2026.
+train:
+  dataset: sft_2013-06_d12_n50000   # folder under Drive data/processed/ (the Step 3 full build)
+  train_positions: 5000          # the Day-1 "small slice": a seeded random subset of the train split
+  val_positions: 1000            # validation losses at each checkpoint (from the held-out games)
+  val_top1_positions: 200        # ...and how often the masked pick equals Stockfish's move (slower: scores every legal move)
+  epochs: 10
+  batch_size: 16                 # a first guess; raise it if the GPU has room, lower it on out-of-memory
+  optimizer: adamw
+  learning_rate: 1.0e-4          # constant (no warmup, no decay)
+  weight_decay: 0.0
+  grad_clip: 1.0                 # max gradient norm; guards against a single bad batch blowing up the adapters
+  value_loss: bce                # bce | mse -- on the value head's win probability vs Stockfish's
+  value_loss_weight: 1.0         # lambda: total loss = move loss + lambda * value loss
+  checkpoint_every: 500          # optimizer steps between saved checkpoints (step 0 = untrained is saved too)
+  log_every: 25                  # optimizer steps between train-loss log lines
   seed: 0

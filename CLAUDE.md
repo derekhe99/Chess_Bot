@@ -61,10 +61,8 @@ Rules:
   charged to the SFT budget (plan v3, Sec 0). Train/validation split by game: 44982 / 5018
   positions, no game on both sides. `dataset.py` yields plain records (the prompt is
   Step 4's).
-- Step 4 (`model/llm_policy.py`, `tests/test_llm_policy.py`) — built on branch
-  `step-4-model`, cut from `step-3-data` before Step 3's gate finished (Derek's call:
-  Step 4 only reads Step 3's record format, which is locked). Step 3's gate has now
-  passed; merge `step-3-data` to `main` first, then push `step-4-model` for review.
+- Step 4 (`model/llm_policy.py`, `tests/test_llm_policy.py`) — done; gate passed in Colab
+  (Sep 28): untrained Qwen3-0.6B finished a game vs random in all 4 toggle combinations.
   Settings in `configs/sft.yaml` `policy:`. Implementation choices: the prompt is the chat
   template (thinking off) around "instruction / board text / Move:"; a move's score is
   log P(move text + end-of-reply), with the prompt run once and its keys/values reused
@@ -73,6 +71,20 @@ Rules:
   last prompt token. Offline tests (tiny random Qwen3) pass; the gate is opt-in:
   `RUN_MODEL_TESTS=1 python -m pytest tests/test_llm_policy.py -v -s -k gate` on a GPU
   runtime.
+- Step 5 (`train/sft.py`, `tests/test_sft.py`, `notebooks/02_train_sft.ipynb`) — in progress
+  on branch `step-5-sft`. Day-1 config: structured text + masking on (plan corrected Sep 28).
+  Settings agreed Sep 28 in `configs/sft.yaml` `train:`: 5,000 train positions (seeded random
+  slice of the train split), 10 epochs, batch 16 (a first guess -- adjust from the smoke run's
+  memory), AdamW constant LR 1e-4, grad clip 1.0, BCE value loss, lambda 1.0, checkpoint every
+  500 steps plus step 0 (untrained). Implementation choices: move loss = -log P(move text +
+  end-of-reply) summed over the move's tokens (exactly play's score; a test checks they're
+  equal); logits are computed only at the move positions (memory); resume from `resume.pt`
+  reproduces an unbroken run exactly (data order seeded per epoch, dropout per step);
+  checkpoint/resume code lives in `sft.py` for now (`utils/checkpoint.py` waits for the
+  config-design alignment point). Labeling CPU: both the whole dataset's and this run's share
+  are logged; which one is charged is Step 6's call. Part 1 (training + a rough screen of every
+  checkpoint vs random / greedy / sf_1320) is built; part 2 (freeze ~3 checkpoint rungs) comes
+  after seeing where the checkpoints land.
 - Not wired up yet: `configs/base.yaml: drive_root` is unused; the setup notebook
   hardcodes `DRIVE_ROOT`. Resolve as part of the config-design alignment point.
 
