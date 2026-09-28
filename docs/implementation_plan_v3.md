@@ -13,6 +13,7 @@
 
 **In-place edit, Sep 27, 2026:** the adaptive game-count rule now stops on the 95% CI alone; the "score must be 20–80%" trigger was dropped (Step 5, *Adaptive game counts*).
 **In-place edit, Sep 27, 2026 (Step 3 start):** SFT games come from one Lichess monthly dump (Sec 3.2, Option A); `dataset.py` yields plain records and the prompt is built only in Step 4's `llm_policy.py` (Sec 2.1); phase-mix sampling and dedup stay in the Step 3 gate.
+**In-place edit, Sep 28, 2026 (Step 5 start):** the Step 5 Day-1 config uses structured text, not FEN -- the plan's old wording was stale against the JTBD doc, Step 4's config default, and encoding.py, which already agreed on structured. FEN stays the later 2x2-sweep comparison (Sec 0, board representation toggle).
 
 **Scope:** Infrastructure, repo structure, dependencies, and execution order. Pseudocode and the modularity/config design come next.
 
@@ -222,7 +223,7 @@ Load the model with LoRA and a value head; implement masked and unmasked move se
 *Gate:* the untrained base model plays a full game against the random mover in all 4 toggle combinations without crashing (a forfeit by illegal moves counts as a finished game).
 
 **Step 5 — SFT baseline end to end** (`train/sft.py`, `02_train_sft.ipynb`) — **Day-1 milestone**
-Train one config (FEN + masking on) on a small slice, evaluate the checkpoints in the harness.
+Train one config (structured text + masking on) on a small slice, evaluate the checkpoints in the harness.
 
 **Freeze checkpoint rungs** (completes the reference set). Pick ~3 of the checkpoints training already saves to fill the gap between greedy and Stockfish 1320:
 - **Selection (tentative; Derek may revise this later):** pick **by strength, not by training step**. Score the saved checkpoints quickly and choose ones spread evenly through the gap, so neighboring rungs score 20–80% against each other (about 150–300 Elo apart). Fixed step intervals would bunch the rungs together, because learning is fast early and slow late.
