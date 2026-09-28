@@ -1,8 +1,16 @@
-# Chess AI — Implementation Plan v2 (Level 1 / Level 2)
+# Chess AI — Implementation Plan v3 (Level 1 / Level 2)
 
-**Version:** v2, Sep 23, 2026. Supersedes v1 (archived outside the repo at `ChessAI/archive/chess_ai_implementation_plan_v1.md`).
-**Changes from v1:** Stockfish download corrected to the Stockfish 19 `universal` build (Sec 3.2); repo tree updated to `Chess_Bot/` with `CLAUDE.md` and `docs/` (Sec 2); board orientation decided (Sec 0, Step 9).
-**Source:** Framing_Docs_updated.docx, the project plan, and the architecture map v2
+**Version:** v3, Sep 24, 2026. Supersedes v2 (archived outside the repo at `ChessAI/archive/chess_ai_implementation_plan_v2.md`, next to v1).
+**Source:** `docs/framing.md` (v2, now the canonical framing), the project plan, and the architecture map v2
+
+**Changes from v2:**
+1. **Evaluation uses a frozen reference set** (Sec 0 Eval row, Sec 2.1 `eval/`, Steps 2 and 5). Stockfish `UCI_Elo` 1320 is the only pinned rating. Stockfish 1500 and 1700 are rated against it and frozen. Random and greedy stay in the set but are unrated until Step 5, when ~3 frozen SFT checkpoints connect them to the scale. Each new model is rated against the frozen set; only its own rating is fitted. Dropped from the set: Stockfish depth 1 (measured at ~1700, duplicating a rung; kept as a smoke-test opponent only) and Stockfish 2000.
+2. **Checkpoint rungs** (Step 5): picked by strength, not by training step. **This selection rule is tentative; Derek may revise it later.** Rungs are frozen with adaptive game counts, starting at 20 games per neighbor pair.
+3. **Illegal moves** (new Sec 0 row): three consecutive illegal attempts on one move forfeits the game, in eval and in self-play.
+4. **Unmasked arms self-play unmasked** (Sec 0 LLM design row, Step 7): the masking toggle stays meaningful through RL, and illegal-move rate is tracked over training.
+5. **Dollar cost** (Sec 0 Compute accounting row, `budget.py`, Steps 6 and 11): hours are converted at a pinned market rental rate (not the Colab bill). Reported as dollars to reach a given Elo, inference cost per game, and amortized training cost per game.
+6. **Step 2 gate reduced** to what can be measured before any model exists.
+
 **Scope:** Infrastructure, repo structure, dependencies, and execution order. Pseudocode and the modularity/config design come next.
 
 ---
@@ -15,13 +23,14 @@ These decisions are already made. Everything below depends on them.
 |---|---|
 | LLM family | **Pretrained small open-weight LLM**, fine-tuned (not a transformer trained from scratch) |
 | Legal-move toggle | **Hard masking / constrained decoding** (on) vs. free generation (off). Listing legal moves in the prompt is *not* the toggle. |
+| Illegal moves | An agent that makes **three consecutive illegal attempts on the same move forfeits the game** (it loses; termination `illegal_move`). Applies wherever games are played: eval matches and self-play. Masked agents can't trigger it. Every illegal attempt is logged. |
 | Board representation toggle | FEN text vs. structured text (piece-per-square tokens). No image input. |
-| LLM design | Phase 1: 2x2 (mask × representation), all trained with SFT warm-start + RL. Phase 2: best combo retrained under all 3 regimes (self-play RL only / SFT only / SFT + RL). |
+| LLM design | Phase 1: 2x2 (mask × representation), all trained with SFT warm-start + RL. Phase 2: best combo retrained under all 3 regimes (self-play RL only / SFT only / SFT + RL). The masking toggle applies in self-play too: unmasked arms play their self-play games unmasked (see Illegal moves), so how often they attempt illegal moves over RL training is itself an observed outcome. |
 | AlphaZero | Small CNN policy-value net + MCTS, pure self-play |
 | Board orientation | **LLM arms never flip**: they see absolute FEN/UCI, matching the notation the pretrained model learned from. **AlphaZero flips**: the CNN always sees the position from the side to move (board mirrored + colors swapped when Black moves), the standard AlphaZero practice, so it learns one set of patterns for both colors instead of two. Not flipping would handicap the AlphaZero arm's sample efficiency and bias the comparison against it. The Step 1 move vocabulary and planes stay absolute; the flip is a thin layer added in Step 9. |
 | Terminology | **Game** = one full game. **Round** = a batch of self-play games (e.g., 50 games), followed by one training update. SFT has no rounds; it trains on a static dataset. |
-| Eval | Rated only against fixed anchors: Stockfish at limited strength levels plus weak anchors below its ~1320 floor |
-| Compute accounting | GPU-hours (train + inference) as the shared currency. Stockfish labeling CPU time is charged to SFT and warm-start. Inference compute per move is capped in eval. |
+| Eval | **Frozen reference set.** One pin: Stockfish `UCI_Elo` 1320 = 1320. The other members are rated once from games among themselves and then frozen: Stockfish 1500 and 1700 (Step 2); random mover, material-greedy player, and ~3 early SFT checkpoints that fill the gap between greedy and 1320 (Step 5). Each new model is rated against the frozen set and only its own rating is fitted, so the scale never drifts. A model can later be frozen into the set as a new rung. Stockfish members play at 0.1 s per move. |
+| Compute accounting | GPU-hours (train + inference) as the shared currency. Stockfish labeling CPU time is charged to SFT and warm-start. Inference compute per move is capped in eval. **Also reported in dollars:** hours × a pinned **market rental rate** (one public hourly price per resource, with source and date, pinned in Step 6), not the Colab bill. Derived metrics: dollars to reach a given Elo; inference cost per game (the agent's own compute only, never the opponent's); amortized training cost per game at stated lifetime game counts (e.g. 1k / 100k / 10M). |
 | Rigor | 2–3 seeds per RL arm. Start with a small number of eval games, then scale up for final numbers. |
 | Sequencing | SFT-on-Stockfish baseline end to end first |
 
@@ -58,7 +67,8 @@ Chess_Bot/
   README.md
   CLAUDE.md          # context for Claude Code; imports this plan
   docs/
-    implementation_plan_v2.md   # this file
+    framing.md                  # research intent (canonical)
+    implementation_plan_v3.md   # this file
   requirements.txt
   configs/
     base.yaml          # paths, seed, GPU type, compute budget
@@ -66,7 +76,7 @@ Chess_Bot/
     sft.yaml           # SFT hyperparameters
     llm_rl.yaml        # LLM self-play RL hyperparameters
     alphazero.yaml     # network size, MCTS sims, games/round, rounds
-    eval.yaml          # anchors, games per matchup, per-move budget
+    eval.yaml          # reference set, games per matchup, per-move budget
   engine/
     board.py
     moves.py
@@ -126,7 +136,7 @@ The original plan's `serve/` folder (UCI bot / API) is deferred. It isn't needed
 - **`dataset.py`** — PyTorch `Dataset` that turns labeled positions into model inputs and targets for the chosen board representation. Handles train/validation split and batching.
 
 **`model/`**
-- **`llm_policy.py`** — Loads the pretrained model and tokenizer, attaches LoRA adapters and a small value head (predicts win likelihood from the final hidden state), and builds prompts. Implements move selection both ways: **masked** (score only legal moves and pick from them) and **unmasked** (free generation, then parse; illegal output is logged and handled per config).
+- **`llm_policy.py`** — Loads the pretrained model and tokenizer, attaches LoRA adapters and a small value head (predicts win likelihood from the final hidden state), and builds prompts. Implements move selection both ways: **masked** (score only legal moves and pick from them) and **unmasked** (free generation, then parse; an illegal move is logged and retried, and the third consecutive illegal attempt forfeits the game, per Sec 0).
 - **`az_net.py`** — Small ResNet-style CNN for AlphaZero with a policy head over the shared move vocabulary and a value head. Size (blocks, channels) is set in config.
 
 **`search/`**
@@ -135,17 +145,17 @@ The original plan's `serve/` folder (UCI bot / API) is deferred. It isn't needed
 
 **`train/`**
 - **`sft.py`** — Supervised fine-tuning on Stockfish labels: cross-entropy on the move plus a value loss on the win probability. Logs positions seen, GPU time, and tokens, and saves checkpoints for eval curves.
-- **`llm_rl.py`** — LLM self-play RL: play a round of games, assign the final win/loss/draw result as the reward to every move in that game, and update with a policy-gradient loss (with a baseline, plus a KL penalty toward the starting model to keep it stable). Can start from the base model (pure RL) or an SFT checkpoint (warm-start).
+- **`llm_rl.py`** — LLM self-play RL: play a round of games, assign the final win/loss/draw result as the reward to every move in that game, and update with a policy-gradient loss (with a baseline, plus a KL penalty toward the starting model to keep it stable). Can start from the base model (pure RL) or an SFT checkpoint (warm-start). Unmasked arms self-play unmasked: a forfeit by illegal moves counts as a loss, and the illegal-move rate is logged per round.
 - **`az_train.py`** — AlphaZero loop: self-play round → replay buffer → gradient updates → checkpoint, repeated for N rounds. Rounds, games per round, and MCTS sims come from config.
 
 **`eval/`**
-- **`anchors.py`** — Defines the fixed opponents: random mover, material-greedy player, Stockfish capped at depth 1, and Stockfish at several `UCI_Elo` levels. Weak anchors are rated once by playing the Stockfish ladder, then frozen.
-- **`match.py`** — Plays N games of agent vs. anchor with alternating colors, enforcing the per-move inference budget (time, or MCTS sims). Records results, PGNs, move latency, and illegal-move attempts.
-- **`elo.py`** — Estimates an agent's Elo from its results against the anchors with bootstrap confidence intervals. Also produces Elo-vs-samples and Elo-vs-compute curves from checkpoint evals.
+- **`anchors.py`** — Defines the reference set: random mover, material-greedy player, and Stockfish at `UCI_Elo` 1320 / 1500 / 1700 (0.1 s per move), plus a frozen registry that trained checkpoints are added to as rungs (weights hash + locked play settings). Stockfish 1320 is the only pinned rating; every other member is rated once, then frozen. Stockfish at depth 1 is kept as a smoke-test opponent only.
+- **`match.py`** — Plays N games of agent vs. opponent with alternating colors, enforcing the per-move inference budget (time, or MCTS sims) and the three-strikes illegal-move forfeit. Records results, PGNs, move latency, and illegal-move attempts.
+- **`elo.py`** — Fits Elo ratings with bootstrap confidence intervals, holding the pinned and frozen ratings fixed, and flags ratings the games can't pin down (e.g. an agent that lost every game). Used to rate the reference set once (with adaptive game counts when freezing a rung) and then to rate each new model against it, fitting only the new model. Also produces Elo-vs-samples and Elo-vs-compute curves from checkpoint evals.
 
 **`utils/`**
 - **`config.py`** — Loads and merges YAML configs and applies notebook overrides. Every tunable number lives in config, never in code.
-- **`budget.py`** — Compute meter: GPU-seconds, Stockfish CPU-seconds, tokens processed, and a rough FLOPs estimate per run. Can stop training when the budget is spent, which enforces equal compute across arms.
+- **`budget.py`** — Compute meter: GPU-seconds, Stockfish CPU-seconds, tokens processed, and a rough FLOPs estimate per run. Can stop training when the budget is spent, which enforces equal compute across arms. Converts hours to dollars with the pinned market-rate price table (Sec 0).
 - **`logging.py`** — Writes metrics per run to CSV in Drive, optionally to Weights & Biases. Every run gets an ID, and its config and GPU type are saved with the results.
 - **`checkpoint.py`** — Saves and resumes model, optimizer, replay buffer, RNG state, and budget meter to Drive with safe writes. This is what makes Colab disconnects survivable.
 
@@ -174,7 +184,7 @@ The original plan's `serve/` folder (UCI bot / API) is deferred. It isn't needed
 | Resource | How to get it | Notes |
 |---|---|---|
 | **Open-weight LLM** | Hugging Face Hub via `AutoModelForCausalLM.from_pretrained(...)`. Create a free HF account and a read token, and store it in Colab Secrets. | **Decided: `Qwen/Qwen3-0.6B`.** Apache-2.0, ungated, fits comfortably on an L4 with LoRA. See Section 0 for why Qwen3 over Qwen2.5. |
-| **Stockfish (oracle and eval anchor)** | Download the official Linux binary from the Stockfish GitHub releases page into the Colab runtime (Stockfish 19+ ships one `stockfish-linux-x86-64-universal` build; there is no separate `avx2` asset anymore). Fallback: `apt-get install stockfish` (older version). Drive it from Python with `chess.engine.SimpleEngine.popen_uci`. | Pin the version and log it. Use a fixed depth or node count for labeling. Use `UCI_LimitStrength` + `UCI_Elo` for eval levels (minimum is around 1320, which is why the weak anchors exist). |
+| **Stockfish (oracle and eval reference)** | Download the official Linux binary from the Stockfish GitHub releases page into the Colab runtime (Stockfish 19+ ships one `stockfish-linux-x86-64-universal` build; there is no separate `avx2` asset anymore). Fallback: `apt-get install stockfish` (older version). Drive it from Python with `chess.engine.SimpleEngine.popen_uci`. | Pin the version and log it. Use a fixed depth or node count for labeling. Use `UCI_LimitStrength` + `UCI_Elo` for eval levels (minimum is 1320, which is why the reference set extends below it with random, greedy, and frozen checkpoints). |
 | **Lichess games (SFT source)** | Option A: monthly rated-standard PGN dumps from `database.lichess.org`. Use an **older month** (early years are hundreds of MB rather than tens of GB). Option B: stream the Lichess games dataset on the Hugging Face Hub with `datasets` (`streaming=True`). | You only need tens of thousands of positions, so streaming or a small month is plenty. |
 | **Precomputed Lichess evals** (optional shortcut) | `database.lichess.org` also publishes a Stockfish evaluation database of positions. | Saves labeling time **but hides labeling cost**. Either label yourself (preferred) or charge an estimated labeling cost to the budget. |
 | **GitHub** | Repo for the code, cloned in each notebook | Private repo is fine; use a token in Colab Secrets. |
@@ -196,9 +206,9 @@ Create the repo skeleton, requirements, and configs. Confirm in Colab: GPU detec
 Build `board.py`, `moves.py`, `encoding.py`, `stockfish.py`.
 *Gate:* tests pass; Stockfish returns a best move and evaluation for any FEN; all three encodings print correctly.
 
-**Step 2 — Eval harness with anchors** (`eval/`, `03_evaluate.ipynb`)
-Build it *before* any model so every later model is measured the same way. Validate on known cases: random vs. Stockfish depth 1 should lose almost every game, and Stockfish at two `UCI_Elo` levels should come out roughly as far apart as their settings. Rate and freeze the weak anchors. Time how long a game takes on Colab's CPUs.
-*Gate:* the harness outputs sensible Elo estimates with confidence intervals for the anchors themselves.
+**Step 2 — Eval harness with the reference set** (`eval/`, `03_evaluate.ipynb`)
+Build it *before* any model so every later model is measured the same way. Only the Stockfish end of the reference set can be rated now: random and greedy lose every game to Stockfish 1320, so their ratings can't be fitted until the Step 5 checkpoints connect them to the scale. Smoke-test the harness on known cases (random vs. Stockfish depth 1 loses almost every game; an always-illegal agent forfeits on its third attempt). Play Stockfish 1320 / 1500 / 1700 against each other, rate 1500 and 1700 with 1320 pinned (same adaptive game counts as Step 5), and freeze them. Time how long a game takes on Colab's CPUs.
+*Gate:* smoke tests pass; Stockfish 1500 and 1700 are rated with sensible confidence intervals and frozen; game timings recorded. The weak end of the scale is deferred to Step 5.
 
 **Step 3 — SFT data pipeline** (`data/`, `01_build_dataset.ipynb`)
 Download → sample by phase → label with Stockfish → Parquet in Drive. Start with ~5–10k positions to check timing, then build the full set (tens of thousands).
@@ -206,30 +216,39 @@ Download → sample by phase → label with Stockfish → Parquet in Drive. Star
 
 **Step 4 — LLM policy wrapper** (`model/llm_policy.py`)
 Load the model with LoRA and a value head; implement masked and unmasked move selection for both representations.
-*Gate:* the untrained base model plays a full game against the random mover in all 4 toggle combinations without crashing.
+*Gate:* the untrained base model plays a full game against the random mover in all 4 toggle combinations without crashing (a forfeit by illegal moves counts as a finished game).
 
 **Step 5 — SFT baseline end to end** (`train/sft.py`, `02_train_sft.ipynb`) — **Day-1 milestone**
 Train one config (FEN + masking on) on a small slice, evaluate the checkpoints in the harness.
-*Gate:* an Elo number with a confidence interval that beats the untrained model. This validates the whole stack.
+
+**Freeze checkpoint rungs** (completes the reference set). Pick ~3 of the checkpoints training already saves to fill the gap between greedy and Stockfish 1320:
+- **Selection (tentative; Derek may revise this later):** pick **by strength, not by training step**. Score the saved checkpoints quickly and choose ones spread evenly through the gap, so neighboring rungs score 20–80% against each other (about 150–300 Elo apart). Fixed step intervals would bunch the rungs together, because learning is fast early and slow late.
+- **How many:** enough that no gap between neighbors exceeds ~300 Elo; 3 is the starting guess.
+- **Adaptive game counts:** start at 20 games per neighbor pair; add games only if the rung's 95% CI is wider than ±100 Elo, or it scored below 20% or above 80% against a neighbor.
+- **Freezing:** record the rating, hash the weights, lock the play settings (always the top legal move), and never retrain or re-rate it. Random and greedy get their ratings in the same fit, through the new rungs.
+- **Known bias:** checkpoint rungs play like an LLM, which may slightly favor the LLM arms. The non-LLM members keep this in check (Step 9 can add an AlphaZero rung).
+
+*Gate:* an Elo number with a confidence interval that beats the untrained model, and a reference set connected from random up to Stockfish 1700 with every member rated and frozen. This validates the whole stack.
 
 **Step 6 — Lock the compute budget**
-Using timings from Steps 2–5, set the fixed GPU-hour budget per arm and the per-move inference cap, and write them to `base.yaml` / `eval.yaml`. Move to the L4 for all reported runs from here.
+Using timings from Steps 2–5, set the fixed GPU-hour budget per arm and the per-move inference cap, pin the market-rate price table (Sec 0, Compute accounting), and write them to `base.yaml` / `eval.yaml`. Move to the L4 for all reported runs from here.
 
 **Step 7 — LLM self-play RL** (`search/selfplay.py`, `train/llm_rl.py`, `04_train_llm_rl.ipynb`)
 Start from the SFT checkpoint (warm-start) and confirm Elo improves over the SFT baseline across a few rounds.
+Log the illegal-move rate per round. Risk to watch: an unmasked arm that starts RL without SFT may forfeit most early games by illegal moves, producing short games with little chess signal, and stall.
 *Gate:* stable training (no collapse), and Elo is flat or rising.
 
 **Step 8 — LLM Phase 1: 2x2 sweep**
 Run all 4 combos (mask × representation) under SFT + RL at equal budget, 2–3 seeds each. Pick the best combo.
 
 **Step 9 — AlphaZero arm** (`model/az_net.py`, `search/mcts.py`, `train/az_train.py`, `05_train_alphazero.ipynb`)
-Start with `tests/test_mcts.py` (mate-in-1), then run parallel self-play training at the same budget, 2–3 seeds. Before training, add side-to-move flipping for the CNN (Sec 0, Board orientation): mirror the board with `board.mirror()` before `to_planes`, and map the network's move outputs back through a fixed 1968-entry mirror table (e.g. `e7e5` ↔ `e2e4`); flip the stored search policies the same way. Add a test that flipping twice returns the original position and move, and that flipped legal masks still match python-chess. This is independent of Steps 7–8, so it can run in a separate session alongside them.
+Start with `tests/test_mcts.py` (mate-in-1), then run parallel self-play training at the same budget, 2–3 seeds. Before training, add side-to-move flipping for the CNN (Sec 0, Board orientation): mirror the board with `board.mirror()` before `to_planes`, and map the network's move outputs back through a fixed 1968-entry mirror table (e.g. `e7e5` ↔ `e2e4`); flip the stored search policies the same way. Add a test that flipping twice returns the original position and move, and that flipped legal masks still match python-chess. This is independent of Steps 7–8, so it can run in a separate session alongside them. Optionally, freeze an early AlphaZero checkpoint into the reference set (same procedure as Step 5) to balance the LLM checkpoint rungs.
 
 **Step 10 — LLM Phase 2: regime comparison**
 Retrain the best combo under pure self-play RL, SFT only, and SFT + RL at equal budget, 2–3 seeds each.
 
 **Step 11 — Final eval and analysis** (`06_analysis.ipynb`)
-Scale up eval games for final numbers. Produce Elo with confidence intervals, Elo-vs-samples curves (sample efficiency), Elo-vs-compute, training time, and inference time per move for every arm. These map directly to the presentation slides.
+Scale up eval games for final numbers. Produce Elo with confidence intervals, Elo-vs-samples curves (sample efficiency), Elo-vs-compute (in GPU-hours and dollars), training time, inference time per move, inference cost per game, amortized training cost per game, and illegal-move rate over training (unmasked arms) for every arm. These map directly to the presentation slides.
 
 **Optional stretch:** LLM + MCTS arm, reusing `search/mcts.py` with the LLM's policy and value heads.
 

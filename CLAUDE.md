@@ -12,7 +12,7 @@ each decision):
 **Implementation plan** (the *what* and *how*: the spec for scope, design, and
 execution order):
 
-@docs/implementation_plan_v2.md
+@docs/implementation_plan_v3.md
 
 Precedence: the plan beats the framing (it was written later and incorporates the
 review notes). This file beats both for implementation details and for decisions made
@@ -28,12 +28,14 @@ Rules:
   plan, adds scope, skips a gate, or settles an open item ("Still open" in Sec 0,
   "Next alignment points" in Sec 5): stop, flag it to Derek with options and trade-offs,
   and align with him. Don't decide unilaterally.
-- **Order after aligning**: update `docs/implementation_plan_v2.md` (and the Status
-  section below) first, then write the code. Small updates edit v2 in place; a new
-  version (v3, ...) only when Derek says so.
-- Cowork mirrors the plan in its Project docs. After editing the plan, remind Derek so
-  the Cowork copy gets re-synced. `docs/framing.md` is converted from Derek's Word doc;
-  if the Word doc changes, it gets re-converted (don't edit it by hand).
+- **Order after aligning**: update the current plan, `docs/implementation_plan_v3.md`
+  (and the Status section below), first, then write the code. Small updates edit the
+  current version in place; a new version (v4, ...) only when Derek says so, with the old
+  one archived outside the repo in `ChessAI/archive/`.
+- Cowork mirrors the plan and framing in its Project docs. After editing either, remind
+  Derek so the Cowork copy gets re-synced. From v2 on, `docs/framing.md` is the canonical
+  framing and is edited directly (the original Word doc is no longer maintained); framing
+  changes follow the same discuss, align, update order.
 
 ## Working with Derek
 
@@ -45,9 +47,12 @@ Rules:
 ## Status
 
 - Step 0 (setup, `notebooks/00_setup.ipynb`) — done; gate passed in Colab.
-- Step 1 (`engine/`, `tests/test_engine.py`) — built, 34 tests pass vs. Stockfish 19
-  locally. Gate still to confirm in Colab.
-- Next: Step 2, eval harness (`eval/`).
+- Step 1 (`engine/`, `tests/test_engine.py`) — done; 34 tests pass in Colab.
+- Step 2 (`eval/`, `tests/test_eval.py`, `notebooks/03_evaluate.ipynb`) — built to
+  plan v3: `REFERENCE_SET` (only `sf_1320` pinned), `FrozenRegistry` (Drive:
+  `results/reference_set.json`), adaptive game counts (`rate_adaptively`), three-strikes
+  forfeit as the default. 64 tests pass locally with Stockfish 19. Next: run
+  `03_evaluate.ipynb` in Colab for the gate (freezes sf_1500 / sf_1700).
 - Not wired up yet: `configs/base.yaml: drive_root` is unused; the setup notebook
   hardcodes `DRIVE_ROOT`. Resolve as part of the config-design alignment point.
 
@@ -78,6 +83,6 @@ Rules:
 - **Colab**: `%cd` persists across cells (hence the absolute `REPO_DIR` clone guard);
   "Restart session" does NOT wipe `/content` ("Disconnect and delete runtime" does);
   a missing `nvidia-smi` means the runtime isn't set to GPU.
-- **Stockfish is pinned to 19** (`SF_VERSION = "sf_19"` in `00_setup.ipynb`, which asserts
+- **Stockfish is pinned to 19** (`SF_VERSION = "sf_19"` in `engine/stockfish.py`; `ensure_stockfish()` asserts
   the version). Labels and eval anchors depend on the exact engine; never upgrade it
   without discussing it first.
