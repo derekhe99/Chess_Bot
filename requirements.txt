@@ -1,6 +1,6 @@
 python-chess
 torch
-transformers
+transformers>=4.56  # Qwen3 support + the `dtype=` loading argument
 peft
 accelerate
 datasets

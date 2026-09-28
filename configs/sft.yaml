@@ -1,2 +1,22 @@
 # SFT hyperparameters.
-# TODO: fill in during Step 5.
+# TODO: fill in during Step 5 (learning rate, batch size, value_loss_type, lambda, ...).
+
+# The LLM player (Step 4, model/llm_policy.py -> PolicyConfig). Lives here because
+# RL (Step 7) continues from the SFT adapters, so the LoRA shape is set once, at SFT.
+# May move to its own file when the config design is aligned (plan Sec 5, item 2).
+policy:
+  model_id: Qwen/Qwen3-0.6B
+  representation: structured     # structured | fen      (the board-representation toggle)
+  masked: true                   # true = pick among legal moves only; false = free generation
+  instruction: "You are playing chess. Reply with your move for the side to move, in UCI notation (for example e2e4, or e7e8q to promote)."
+  enable_thinking: false         # Qwen3's hard switch; false = the non-reasoning baseline
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  lora_target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+  dtype: auto                    # bf16 on GPUs that have it (L4), fp16 otherwise (T4), fp32 on CPU
+  score_batch_size: 32           # legal moves scored per forward pass (bounds GPU memory)
+  prefix_cache: true             # run the prompt once and reuse it for every legal move
+  max_new_tokens: 8              # unmasked: a UCI move is at most 5 characters
+  retry_temperature: 1.0         # unmasked: sampling temperature after an illegal move (1st try is greedy)
+  seed: 0
