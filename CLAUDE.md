@@ -48,11 +48,12 @@ Rules:
 
 - Step 0 (setup, `notebooks/00_setup.ipynb`) — done; gate passed in Colab.
 - Step 1 (`engine/`, `tests/test_engine.py`) — done; 34 tests pass in Colab.
-- Step 2 (`eval/`, `tests/test_eval.py`, `notebooks/03_evaluate.ipynb`) — built to
-  plan v3: `REFERENCE_SET` (only `sf_1320` pinned), `FrozenRegistry` (Drive:
-  `results/reference_set.json`), adaptive game counts (`rate_adaptively`), three-strikes
-  forfeit as the default. 64 tests pass locally with Stockfish 19. Next: run
-  `03_evaluate.ipynb` in Colab for the gate (freezes sf_1500 / sf_1700).
+- Step 2 (`eval/`, `tests/test_eval.py`, `notebooks/03_evaluate.ipynb`) — done; gate
+  passed in Colab (Sep 27). Frozen in Drive `results/reference_set.json`:
+  sf_1500 = 1580 [1500, 1673], sf_1700 = 1731 [1654, 1834] (160 games each, sf_1320
+  pinned at 1320, 0.1 s/move). Both land above nominal -- a finding, not an error.
+  Adaptive game counts stop on the 95% CI alone (plan v3, Step 5).
+- Next: Step 3 (`data/`, `notebooks/01_build_dataset.ipynb`) on branch `step-3-data`.
 - Not wired up yet: `configs/base.yaml: drive_root` is unused; the setup notebook
   hardcodes `DRIVE_ROOT`. Resolve as part of the config-design alignment point.
 
@@ -64,6 +65,10 @@ Rules:
 3. **Google Drive** — artifacts only, `DRIVE_ROOT = /content/drive/MyDrive/chess-ai`:
    `data/raw`, `data/processed`, `checkpoints/{sft,llm_rl,alphazero}`, `logs`, `results`.
    Artifacts never go to git (`.gitignore` covers checkpoints, `*.pt`, `*.parquet`, `stockfish/`).
+
+- **Branches**: `main` = the last Step whose gate passed. Each Step is built on its own
+  branch (`step-N-name`) cut from `main`, tested in Colab from that branch (set `BRANCH`
+  in the notebook's setup cell), and merged to `main` only after its gate passes.
 
 - LLM checkpoints = LoRA adapter + value head + optimizer state; never the frozen base
   model (re-download it from Hugging Face instead).
