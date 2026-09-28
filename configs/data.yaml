@@ -1,5 +1,19 @@
-# Dataset size, phase mix, Stockfish label depth.
-# TODO: exact parameter set not yet locked -- see plan Sec 5, "Next alignment points".
-num_positions: null
-phase_mix: null        # opening / middlegame / endgame split
-stockfish_label_depth: null
+# Step 3 -- SFT data pipeline (plan v3, Sec 3.2 and Step 3).
+# First values; the Step 3 timing run (~5k positions) tunes them. The wider config
+# design (merging, overrides) is still an open alignment point (plan Sec 5).
+
+source_month: "2013-06"      # Lichess monthly dump, pinned by name (~225k rated games)
+
+num_positions: 50000         # full dataset; the notebook's timing run uses a smaller number
+phase_mix:                   # fraction of positions per phase; must sum to 1
+  opening: 0.3333
+  middlegame: 0.3334
+  endgame: 0.3333
+phase_rule:
+  opening_max_ply: 20        # opening = before ply 20 (first 10 moves each)...
+  endgame_max_material: 13   # ...unless non-pawn material left (both sides; N/B 3, R 5, Q 9) <= 13 -> endgame
+
+stockfish_label_depth: 12    # fixed search depth per label; one thread, hash cleared per position
+label_chunk_size: 250        # positions per saved chunk (the resume unit)
+val_fraction: 0.1            # share of GAMES held out for validation
+seed: 0

@@ -53,7 +53,26 @@ Rules:
   sf_1500 = 1580 [1500, 1673], sf_1700 = 1731 [1654, 1834] (160 games each, sf_1320
   pinned at 1320, 0.1 s/move). Both land above nominal -- a finding, not an error.
   Adaptive game counts stop on the 95% CI alone (plan v3, Step 5).
-- Next: Step 3 (`data/`, `notebooks/01_build_dataset.ipynb`) on branch `step-3-data`.
+- Step 3 (`data/`, `tests/test_data.py`, `notebooks/01_build_dataset.ipynb`) — done;
+  gate passed in Colab (Sep 28) on branch `step-3-data`. 50,000 positions from Lichess
+  `2013-06` (`configs/data.yaml`, checked against Lichess's sha256), exact phase-mix quota
+  hit (opening 16665 / middlegame 16670 / endgame 16665), no repeated positions, every
+  label move legal. Stockfish CPU time: 59.5 min (~0.071 s/position at depth 12) --
+  charged to the SFT budget (plan v3, Sec 0). Train/validation split by game: 44982 / 5018
+  positions, no game on both sides. `dataset.py` yields plain records (the prompt is
+  Step 4's).
+- Step 4 (`model/llm_policy.py`, `tests/test_llm_policy.py`) — built on branch
+  `step-4-model`, cut from `step-3-data` before Step 3's gate finished (Derek's call:
+  Step 4 only reads Step 3's record format, which is locked). Step 3's gate has now
+  passed; merge `step-3-data` to `main` first, then push `step-4-model` for review.
+  Settings in `configs/sft.yaml` `policy:`. Implementation choices: the prompt is the chat
+  template (thinking off) around "instruction / board text / Move:"; a move's score is
+  log P(move text + end-of-reply), with the prompt run once and its keys/values reused
+  for every legal move; unmasked = greedy first try, sampled retries (the harness forfeits
+  on the third illegal attempt); value head = one zero-initialized linear layer on the
+  last prompt token. Offline tests (tiny random Qwen3) pass; the gate is opt-in:
+  `RUN_MODEL_TESTS=1 python -m pytest tests/test_llm_policy.py -v -s -k gate` on a GPU
+  runtime.
 - Not wired up yet: `configs/base.yaml: drive_root` is unused; the setup notebook
   hardcodes `DRIVE_ROOT`. Resolve as part of the config-design alignment point.
 

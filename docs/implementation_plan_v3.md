@@ -12,6 +12,7 @@
 6. **Step 2 gate reduced** to what can be measured before any model exists.
 
 **In-place edit, Sep 27, 2026:** the adaptive game-count rule now stops on the 95% CI alone; the "score must be 20–80%" trigger was dropped (Step 5, *Adaptive game counts*).
+**In-place edit, Sep 27, 2026 (Step 3 start):** SFT games come from one Lichess monthly dump (Sec 3.2, Option A); `dataset.py` yields plain records and the prompt is built only in Step 4's `llm_policy.py` (Sec 2.1); phase-mix sampling and dedup stay in the Step 3 gate.
 
 **Scope:** Infrastructure, repo structure, dependencies, and execution order. Pseudocode and the modularity/config design come next.
 
@@ -133,9 +134,9 @@ The original plan's `serve/` folder (UCI bot / API) is deferred. It isn't needed
 
 **`data/` — SFT data pipeline**
 - **`download.py`** — Fetches raw games from Lichess (a monthly PGN dump or the Hugging Face mirror, see Section 3) and streams them without loading everything into memory. Caches the raw files to Drive.
-- **`sample_positions.py`** — Extracts positions from games, tags each as opening, middlegame, or endgame, and samples to a target phase mix set in config. Removes duplicate positions.
-- **`annotate.py`** — Runs Stockfish over the sampled positions in parallel to attach the best move and the evaluation (converted to a win probability). Writes a Parquet file to Drive and logs the total CPU time spent.
-- **`dataset.py`** — PyTorch `Dataset` that turns labeled positions into model inputs and targets for the chosen board representation. Handles train/validation split and batching.
+- **`sample_positions.py`** — Extracts positions from games, tags each as opening, middlegame, or endgame, and samples to a target phase mix set in config. Removes duplicate positions. Phase rule (thresholds in config): endgame if little non-pawn material is left, else opening if early in the game, else middlegame. At most one position per phase per game, so no single game dominates.
+- **`annotate.py`** — Runs Stockfish over the sampled positions in parallel to attach the best move and the evaluation (converted to a win probability). Writes Parquet to Drive in chunks, so a dropped Colab session resumes where it stopped, and logs the total Stockfish CPU time spent.
+- **`dataset.py`** — PyTorch `Dataset` that yields plain records for the chosen board representation: the board as text (structured or FEN), the label move (UCI), and the label win-probability. Splits train/validation **by game**, so positions from one game never land on both sides. It does not build prompts or tokenize: the one shared prompt template lives in `model/llm_policy.py` (Step 4), so training and inference read identical text.
 
 **`model/`**
 - **`llm_policy.py`** — Loads the pretrained model and tokenizer, attaches LoRA adapters and a small value head (predicts win likelihood from the final hidden state), and builds prompts. Implements move selection both ways: **masked** (score only legal moves and pick from them) and **unmasked** (free generation, then parse; an illegal move is logged and retried, and the third consecutive illegal attempt forfeits the game, per Sec 0).
@@ -187,7 +188,7 @@ The original plan's `serve/` folder (UCI bot / API) is deferred. It isn't needed
 |---|---|---|
 | **Open-weight LLM** | Hugging Face Hub via `AutoModelForCausalLM.from_pretrained(...)`. Create a free HF account and a read token, and store it in Colab Secrets. | **Decided: `Qwen/Qwen3-0.6B`.** Apache-2.0, ungated, fits comfortably on an L4 with LoRA. See Section 0 for why Qwen3 over Qwen2.5. |
 | **Stockfish (oracle and eval reference)** | Download the official Linux binary from the Stockfish GitHub releases page into the Colab runtime (Stockfish 19+ ships one `stockfish-linux-x86-64-universal` build; there is no separate `avx2` asset anymore). Fallback: `apt-get install stockfish` (older version). Drive it from Python with `chess.engine.SimpleEngine.popen_uci`. | Pin the version and log it. Use a fixed depth or node count for labeling. Use `UCI_LimitStrength` + `UCI_Elo` for eval levels (minimum is 1320, which is why the reference set extends below it with random, greedy, and frozen checkpoints). |
-| **Lichess games (SFT source)** | Option A: monthly rated-standard PGN dumps from `database.lichess.org`. Use an **older month** (early years are hundreds of MB rather than tens of GB). Option B: stream the Lichess games dataset on the Hugging Face Hub with `datasets` (`streaming=True`). | You only need tens of thousands of positions, so streaming or a small month is plenty. |
+| **Lichess games (SFT source)** | Option A: monthly rated-standard PGN dumps from `database.lichess.org`. Use an **older month** (early years are hundreds of MB rather than tens of GB). Option B: stream the Lichess games dataset on the Hugging Face Hub with `datasets` (`streaming=True`). | **Decided: Option A.** One older month (default `2013-06`, ~225k games), pinned by name in `configs/data.yaml`, checked against Lichess's published `sha256sums.txt`, and cached in Drive `data/raw/`. Same file, same games, every time. You only need tens of thousands of positions. |
 | **Precomputed Lichess evals** (optional shortcut) | `database.lichess.org` also publishes a Stockfish evaluation database of positions. | Saves labeling time **but hides labeling cost**. Either label yourself (preferred) or charge an estimated labeling cost to the budget. |
 | **GitHub** | Repo for the code, cloned in each notebook | Private repo is fine; use a token in Colab Secrets. |
 | **Google Drive** | `drive.mount()` in each notebook | Datasets, checkpoints, logs, results |
@@ -213,7 +214,7 @@ Build it *before* any model so every later model is measured the same way. Only 
 *Gate:* smoke tests pass; Stockfish 1500 and 1700 are rated with sensible confidence intervals and frozen; game timings recorded. The weak end of the scale is deferred to Step 5.
 
 **Step 3 — SFT data pipeline** (`data/`, `01_build_dataset.ipynb`)
-Download → sample by phase → label with Stockfish → Parquet in Drive. Start with ~5–10k positions to check timing, then build the full set (tens of thousands).
+Download → sample by phase → label with Stockfish → Parquet in Drive. Start with ~5–10k positions to check timing, then build the full set (tens of thousands). Phase-mix sampling and dedup are in scope for the Day-1 dataset.
 *Gate:* labeled dataset in Drive, phase mix matches config, labeling CPU time logged.
 
 **Step 4 — LLM policy wrapper** (`model/llm_policy.py`)
