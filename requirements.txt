@@ -2,6 +2,7 @@ python-chess
 torch
 transformers>=4.56  # Qwen3 support + the `dtype=` loading argument
 peft
+torchao>=0.16.0  # Colab preinstalls an older torchao; peft's LoRA dispatch errors below this
 accelerate
 datasets
 huggingface_hub
