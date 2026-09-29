@@ -71,12 +71,9 @@ Rules:
   last prompt token. Offline tests (tiny random Qwen3) pass; the gate is opt-in:
   `RUN_MODEL_TESTS=1 python -m pytest tests/test_llm_policy.py -v -s -k gate` on a GPU
   runtime.
-- Step 5 (`train/sft.py`, `tests/test_sft.py`, `notebooks/02_train_sft.ipynb`) — in progress
-  on branch `step-5-sft`. Day-1 config: structured text + masking on (plan corrected Sep 28).
-  Settings agreed Sep 28 in `configs/sft.yaml` `train:`: 5,000 train positions (seeded random
-  slice of the train split), 10 epochs, batch 16 (a first guess -- adjust from the smoke run's
-  memory), AdamW constant LR 1e-4, grad clip 1.0, BCE value loss, lambda 1.0, checkpoint every
-  500 steps plus step 0 (untrained). Implementation choices: move loss = -log P(move text +
+- Step 5 (`train/sft.py`, `tests/test_sft.py`, `utils/logging.py`, `tests/test_logging.py`,
+  `notebooks/02_train_sft.ipynb`) — in progress on branch `step-5-sft`. Structured text +
+  masking on (plan corrected Sep 28). Implementation choices: move loss = -log P(move text +
   end-of-reply) summed over the move's tokens (exactly play's score; a test checks they're
   equal); logits are computed only at the move positions (memory); resume from `resume.pt`
   reproduces an unbroken run exactly (data order seeded per epoch, dropout per step);
@@ -85,6 +82,28 @@ Rules:
   are logged; which one is charged is Step 6's call. Part 1 (training + a rough screen of every
   checkpoint vs random / greedy / sf_1320) is built; part 2 (freeze ~3 checkpoint rungs) comes
   after seeing where the checkpoints land.
+  - **Day-1 run (Sep 28), logged:** 5,000 train positions, 10 epochs, checkpoint every 500
+    steps. Finding: real move-selection learning (val_top1 3% -> ~21%, value loss 0.69 -> 0.59)
+    but no checkpoint ever scored a point off Stockfish 1320 in the screen (0W-0D every
+    checkpoint, 10 games each) -- the reference set doesn't connect yet, so the Step 5 gate
+    isn't met. `val_move_loss` degraded after ~epoch 5 while `val_top1` kept climbing:
+    overfitting from repeating the same 5,000 positions 10 times, not a ranking problem.
+    Treated as Day-1 done and logged as a finding, not a failure.
+  - **Field rename:** the per-run counter was called `positions_seen` but is cumulative across
+    epochs (`train_positions x epochs`, i.e. examples processed with repeats), not the count of
+    distinct positions -- misleading, since the Day-1 run's log showed "50000" despite training
+    on only 5,000 unique positions. Renamed to `examples_seen` everywhere (`train/sft.py`,
+    `tests/test_sft.py`, `utils/logging.py`'s CSV schema).
+  - **Next run (Sep 28), in `configs/sft.yaml`:** trains on the full labeled train split
+    instead of a slice (`train_positions: null`, 44,982 positions) to fix the overfitting with
+    more unique data rather than fewer epochs on the same 5,000; `checkpoint_every` raised to
+    5,000 (was 500) to keep the checkpoint count sane at 10x the steps.
+  - **New: `utils/logging.py`** -- `log_experiment()` reads a run's own `run_config.json` /
+    `val_log.csv` / `summary.json` and appends one summary row to the shared
+    `results/experiments.csv` (created on first use); `read_experiments()` reads it back
+    newest-first. This is what Step 11's Elo-vs-samples curves are built from. The notebook now
+    has a one-time backfill cell (logs the Day-1 run above) and a final cell that logs each
+    live run, leaving only the one-line `finding` for Derek to write.
 - Not wired up yet: `configs/base.yaml: drive_root` is unused; the setup notebook
   hardcodes `DRIVE_ROOT`. Resolve as part of the config-design alignment point.
 

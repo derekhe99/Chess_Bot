@@ -58,7 +58,8 @@ class TrainConfig:
     """All SFT settings. Defaults mirror configs/sft.yaml ``train:`` (agreed Sep 28, 2026)."""
 
     dataset: str = "sft_2013-06_d12_n50000"  # folder under Drive data/processed/
-    train_positions: int = 5000        # the "small slice"; None or >= split size = all of it
+    train_positions: int | None = None  # None or >= split size = the whole train split;
+                                        # Day-1 used 5000 (a seeded random slice)
     val_positions: int = 1000          # held-out positions for validation losses
     val_top1_positions: int = 200      # held-out positions for top-1 agreement with Stockfish
     epochs: int = 10
@@ -69,7 +70,7 @@ class TrainConfig:
     grad_clip: float | None = 1.0      # max gradient norm; None = off
     value_loss: str = "bce"            # "bce" | "mse"
     value_loss_weight: float = 1.0     # lambda
-    checkpoint_every: int = 500        # optimizer steps
+    checkpoint_every: int = 5000       # optimizer steps; Day-1 used 500, over 10x fewer total steps
     log_every: int = 25
     seed: int = 0
 
@@ -92,9 +93,14 @@ class TrainConfig:
 
 
 def run_name(policy_cfg: PolicyConfig, cfg: TrainConfig) -> str:
-    """Folder name for a run, e.g. 'structured_masked_n5000_e10_s0'. Same settings -> same folder (resume)."""
+    """Folder name for a run, e.g. 'structured_masked_nall_e10_s0'. Same settings -> same folder (resume).
+
+    ``train_positions=None`` (the whole train split) renders as ``all`` rather than the
+    Python value, so the folder name stays readable -- 'nNone' looks like a bug.
+    """
     mask = "masked" if policy_cfg.masked else "unmasked"
-    return f"{policy_cfg.representation}_{mask}_n{cfg.train_positions}_e{cfg.epochs}_s{cfg.seed}"
+    n = "all" if cfg.train_positions is None else cfg.train_positions
+    return f"{policy_cfg.representation}_{mask}_n{n}_e{cfg.epochs}_s{cfg.seed}"
 
 
 def subset(n_total: int, n: int | None, seed: int) -> list[int]:
@@ -346,7 +352,7 @@ def train(policy: LLMPolicy, train_ds, val_ds, cfg: TrainConfig, run_dir: str | 
     fp16 = device.type == "cuda" and policy.model.get_input_embeddings().weight.dtype == torch.float16
     scaler = torch.amp.GradScaler("cuda", enabled=fp16)  # fp16 (T4) only: keeps small gradients from rounding to 0
 
-    counters = {"step": 0, "positions_seen": 0, "tokens_seen": 0, "gpu_seconds_train": 0.0,
+    counters = {"step": 0, "examples_seen": 0, "tokens_seen": 0, "gpu_seconds_train": 0.0,
                 "gpu_seconds_val": 0.0}
     ckpts = list_checkpoints(run_dir)
     if (run_dir / "resume.pt").exists():
@@ -374,7 +380,7 @@ def train(policy: LLMPolicy, train_ds, val_ds, cfg: TrainConfig, run_dir: str | 
         _save_checkpoint(policy, run_dir, step)
         _save_resume(run_dir, optimizer, scaler, counters)
         _append_csv(run_dir / "val_log.csv", {"step": step, "epoch": step / steps_per_epoch,
-                                               "positions_seen": counters["positions_seen"],
+                                               "examples_seen": counters["examples_seen"],
                                                **{k: round(v, 5) for k, v in metrics.items()}})
         log(f"[checkpoint {step}/{total_steps}] val move loss {metrics['val_move_loss']:.3f} | "
             f"value loss {metrics['val_value_loss']:.3f} (MAE {metrics['val_value_mae']:.3f}) | "
@@ -413,7 +419,7 @@ def train(policy: LLMPolicy, train_ds, val_ds, cfg: TrainConfig, run_dir: str | 
         sync()
         counters["gpu_seconds_train"] += time.perf_counter() - t0
         counters["step"] = step = step + 1
-        counters["positions_seen"] += len(batch_ex)
+        counters["examples_seen"] += len(batch_ex)
         counters["tokens_seen"] += int(batch["attention_mask"].sum())
         window["move"] += move_nll.mean().item()
         window["value"] += value.mean().item()
@@ -423,7 +429,7 @@ def train(policy: LLMPolicy, train_ds, val_ds, cfg: TrainConfig, run_dir: str | 
             k = window["count"]
             row = {"step": step, "epoch": round(step / steps_per_epoch, 4),
                    "train_move_loss": round(window["move"] / k, 5), "train_value_loss": round(window["value"] / k, 5),
-                   "positions_seen": counters["positions_seen"], "tokens_seen": counters["tokens_seen"],
+                   "examples_seen": counters["examples_seen"], "tokens_seen": counters["tokens_seen"],
                    "gpu_seconds_train": round(counters["gpu_seconds_train"], 2)}
             _append_csv(run_dir / "train_log.csv", row)
             log(f"step {step}/{total_steps} (epoch {step / steps_per_epoch:.2f}) | move loss {row['train_move_loss']:.3f} "

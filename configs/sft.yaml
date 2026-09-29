@@ -20,20 +20,38 @@ policy:
   retry_temperature: 1.0         # unmasked: sampling temperature after an illegal move (1st try is greedy)
   seed: 0
 
-# Training (train/sft.py -> TrainConfig). Day-1 values agreed Sep 28, 2026.
+# Training (train/sft.py -> TrainConfig).
+#
+# Day-1 run (Sep 28, 2026): train_positions=5000, checkpoint_every=500. Logged in
+# results/experiments.csv (utils/logging.py): real move-selection learning (val_top1
+# 3% -> ~21%) but no checkpoint ever scored a point off Stockfish 1320 in the screen, so
+# the reference set doesn't connect yet (Step 5 gate not met). val_move_loss also
+# degraded after ~epoch 5 while val_top1 kept climbing -- overfitting on repeating the
+# same 5,000 positions 10 times, not a top-1/ranking problem. Treated as Day-1 done;
+# connecting the reference set is this next run's job, not a blocker to log the finding.
+#
+# Next run (Sep 28, 2026): train on the full labeled train split instead of a slice, to
+# fix the overfitting directly with more unique data rather than fewer epochs on the same
+# 5,000. checkpoint_every raised to keep the checkpoint count sane at 10x the steps (was
+# 8 checkpoints at 3,130 steps; would be 63 at the old 500-step interval over ~28,120
+# steps -- each one a full save + validation pass, and later a full screening pass).
 train:
   dataset: sft_2013-06_d12_n50000   # folder under Drive data/processed/ (the Step 3 full build)
-  train_positions: 5000          # the Day-1 "small slice": a seeded random subset of the train split
+  train_positions: null          # null = the whole train split (44,982 positions; the other
+                                  # 5,018 of the 50,000 are held out for validation and are
+                                  # never trained on, Day-1 or otherwise)
   val_positions: 1000            # validation losses at each checkpoint (from the held-out games)
   val_top1_positions: 200        # ...and how often the masked pick equals Stockfish's move (slower: scores every legal move)
-  epochs: 10
-  batch_size: 16                 # a first guess; raise it if the GPU has room, lower it on out-of-memory
+  epochs: 10                     # unchanged from Day-1; watch this run's own val_top1 / val_move_loss
+                                  # curve for whether 10 is still right at 10x the unique data
+  batch_size: 16                 # unchanged; Day-1 used 16.5 of 24 GB on the L4, comfortable headroom
   optimizer: adamw
   learning_rate: 1.0e-4          # constant (no warmup, no decay)
   weight_decay: 0.0
   grad_clip: 1.0                 # max gradient norm; guards against a single bad batch blowing up the adapters
   value_loss: bce                # bce | mse -- on the value head's win probability vs Stockfish's
   value_loss_weight: 1.0         # lambda: total loss = move loss + lambda * value loss
-  checkpoint_every: 500          # optimizer steps between saved checkpoints (step 0 = untrained is saved too)
+  checkpoint_every: 5000         # optimizer steps between saved checkpoints (step 0 = untrained is saved too)
+                                  # -- was 500 for the 5k-position Day-1 run; raised 10x along with the data
   log_every: 25                  # optimizer steps between train-loss log lines
   seed: 0

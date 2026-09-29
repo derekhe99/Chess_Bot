@@ -8,6 +8,7 @@ one; and the checkpoint screen plays and rates every checkpoint.
 
     python -m pytest tests/test_sft.py -v
 """
+import dataclasses
 import json
 import random
 
@@ -71,7 +72,9 @@ def test_sft_yaml_train_block_matches_the_defaults():
 
 
 def test_run_name_and_subset():
-    assert run_name(PolicyConfig(), TrainConfig()) == "structured_masked_n5000_e10_s0"
+    assert run_name(PolicyConfig(), TrainConfig()) == "structured_masked_nall_e10_s0"
+    assert run_name(PolicyConfig(), dataclasses.replace(TrainConfig(), train_positions=5000)) \
+        == "structured_masked_n5000_e10_s0"
     a, b = subset(100, 10, seed=3), subset(100, 10, seed=3)
     assert a == b and len(set(a)) == 10 and subset(100, 10, seed=4) != a
     assert subset(5, 10, 0) == list(range(5)) and subset(5, None, 0) == list(range(5))
@@ -123,7 +126,7 @@ def test_training_lowers_the_loss(tok, tmp_path):
     val = pd.read_csv(tmp_path / "run" / "val_log.csv")
     assert list(val["step"]) == [0, 60]                               # untrained + final
     assert val["val_move_loss"].iloc[-1] < val["val_move_loss"].iloc[0]
-    assert summary["positions_seen"] == 15 * 16 and summary["tokens_seen"] > 0
+    assert summary["examples_seen"] == 15 * 16 and summary["tokens_seen"] > 0
 
 
 def test_resume_gives_the_same_weights(tok, tmp_path):
