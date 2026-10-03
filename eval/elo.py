@@ -20,14 +20,20 @@ Main pieces:
                     counts (e.g. copied off a rate_adaptively batch log after an
                     interrupted run) instead of individual GameRecords -- exact
                     rating, close-but-not-identical bootstrap CI
+- append_rating_log -- one row per time a model (not a frozen anchor) is rated
+                    against the reference set (`results/model_ratings.csv`) --
+                    what Step 11's Elo-vs-samples / Elo-vs-compute curves read
 
 Elo-vs-samples and Elo-vs-compute curves (plan Sec 4) are just fit_with_ci run
 once per checkpoint; the plotting lives in the analysis notebook.
 """
 from __future__ import annotations
 
+import csv
+import datetime as _dt
 from collections import defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable, Sequence
 
 import numpy as np
@@ -305,3 +311,48 @@ def format_table(estimates: Iterable[RatingEstimate]) -> str:
         lines.append(f"{e.name:<16}{e.rating:>7.0f}{f'[{e.ci_low:.0f}, {e.ci_high:.0f}]':>18}"
                      f"{e.games:>7}{e.score:>7.2f}  {note}")
     return "\n".join(lines)
+
+
+RATING_LOG_COLUMNS = ["name", "run", "step", "examples_seen", "date", "rating", "ci_low", "ci_high",
+                      "games", "score", "at_bound", "opponents", "notes"]
+
+
+def append_rating_log(path: str | Path, estimate: RatingEstimate, *, run: str, step: int | None = None,
+                      examples_seen: int | None = None, opponents: Iterable[str] = (),
+                      notes: str = "") -> dict:
+    """Append one row for a just-evaluated model to the shared ratings log (CSV).
+
+    Inputs:
+      path          -- the shared CSV (e.g. "results/model_ratings.csv"); created with a
+                       header on first use
+      estimate      -- evaluate_agent()'s RatingEstimate for this model (rating/CI/games/
+                       score/at_bound) -- NOT a FrozenRegistry entry: this model isn't a
+                       frozen anchor, it's one more point for the Elo-vs-samples /
+                       Elo-vs-compute curves (plan Sec 4, Step 11)
+      run, step     -- which training run and checkpoint this is (ties a row back to
+                       results/experiments.csv's run_name/step)
+      examples_seen -- for the Elo-vs-samples curve x-axis; pull it off the run's val_log.csv
+      opponents     -- which reference-set members it played (e.g. list(FIXED))
+      notes         -- anything else worth keeping (free text)
+    Output: the row that was written.
+
+    Core logic: this is a running history, not a frozen set -- the same model can be
+    re-evaluated later (after more RL training, say) and gets a NEW row, never overwriting
+    the old one. That's the opposite of FrozenRegistry (anchors.py), which never re-rates.
+    Keeping the two separate means re-scoring a model never risks corrupting the reference
+    set it was scored against.
+    """
+    row = {"name": estimate.name, "run": run, "step": step, "examples_seen": examples_seen,
+           "date": _dt.date.today().isoformat(), "rating": round(estimate.rating, 1),
+           "ci_low": round(estimate.ci_low, 1), "ci_high": round(estimate.ci_high, 1),
+           "games": estimate.games, "score": round(estimate.score, 4), "at_bound": estimate.at_bound,
+           "opponents": "|".join(opponents), "notes": notes}
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    new = not path.exists()
+    with open(path, "a", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=RATING_LOG_COLUMNS)
+        if new:
+            w.writeheader()
+        w.writerow(row)
+    return row

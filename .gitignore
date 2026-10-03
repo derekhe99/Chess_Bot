@@ -14,3 +14,6 @@ wandb/
 # Stockfish binary + tarball downloaded by 00_setup.ipynb (~80MB, never commit)
 stockfish/
 stockfish.tar.gz
+# Artifacts live on Drive only (CLAUDE.md "How code runs") -- never git, even a small CSV.
+# A results/reference_set.csv briefly got committed by mistake (Sep 30-Oct 1); this is the fix.
+results/

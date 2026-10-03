@@ -136,14 +136,29 @@ Rules:
       neighbors" selection heuristic. `step_15000`'s games were kept in the joint fit (dropping
       them entirely nearly doubles the CI half-width), just not frozen as its own rung. Expected
       to close as later SFT/RL checkpoints get frozen in.
-  - **Source of truth for the reference set:** `results/reference_set.json` on Drive
-    (`eval.anchors.FrozenRegistry`) -- one entry per frozen member (rating, CI, games, a spec
-    that can rebuild and replay it exactly, and notes on how it was measured). Members are
-    only ever added, never re-rated. Every future model is scored against it the same way:
-    `eval.match.evaluate_agent(new_model, opponents_built_from_the_registry, fixed_ratings(...),
-    n_games)` fits only the new model's rating, holding every reference-set member fixed, so
-    the scale never drifts. Also saved as a flat CSV (`results/reference_set.csv`, same
-    numbers) for quick loading outside the registry's own JSON shape.
+  - **Source of truth for the reference set (revised Oct 3, 2026): one flat CSV,
+    `results/reference_set.csv` on Drive** (`eval.anchors.FrozenRegistry`) -- Derek's call,
+    replacing the earlier JSON. One row per member, pin included (`sf_1320`'s row is the pin
+    itself -- ci_low = ci_high = 1320.0, no interval, since it's fixed by definition, not
+    measured); `spec`/`notes` are JSON-encoded into their own cell so nothing is lost (a
+    checkpoint rung's weights hash, representation, masked toggle all round-trip) while the
+    file stays one flat CSV throughout. Members are only ever added, never re-rated. This is
+    the only thing the evaluation code actually reads (`eval.match.evaluate_agent(new_model,
+    opponents_built_from_the_registry, fixed_ratings(...), n_games)` fits only the new
+    model's rating, holding every reference-set member fixed) -- not a convention, a
+    functional dependency: if this file doesn't have a member, nothing can be rated against
+    it. `FrozenRegistry(path)` is the only way anything reads or writes it; nothing else
+    should parse this CSV by hand.
+  - **New: `eval.elo.append_rating_log`** -- a model being evaluated (an SFT/RL/AZ
+    checkpoint, not a frozen anchor) isn't in the registry above; it's a running history
+    instead, `results/model_ratings.csv` on Drive, one row per evaluation (re-evaluating the
+    same model later adds a new row, never overwrites). This is what Step 11's
+    Elo-vs-samples / Elo-vs-compute curves actually read (joined to `results/experiments.csv`
+    on `run`/`step` for the training-side columns).
+  - **Both CSVs live on Drive only** (`DRIVE_ROOT/results/`), per the existing artifacts-stay-
+    on-Drive convention ("How code runs" below) -- not in git. A `results/reference_set.csv`
+    briefly existed in the repo by mistake (Sep 30-Oct 1); `.gitignore` now excludes
+    `results/` so that can't recur.
   - **Gate revised (Oct 1, 2026):** dropped "beats the untrained model" from the Step 5 gate
     (plan Sec 4) -- Derek's call. What Step 7 actually needs from Step 5 is a reference set
     with CIs to rate RL checkpoints against; a beat-the-untrained-model check is a useful

@@ -17,12 +17,9 @@ Main pieces:
                         depth 1, used only to smoke-test the harness
 - build_agents / close_agents -- turn specs into playable agents, and shut them down
 - fixed_ratings      -- pinned ratings + frozen ratings: what the Elo fit holds fixed
-- FrozenRegistry     -- the saved, never-re-rated ratings (JSON on Drive); later
-                        Steps add checkpoint rungs to it
-- write_reference_set_csv -- the same ratings as a flat CSV, for analysis code that
-                        doesn't want to parse the registry's nested spec/notes. A view
-                        onto the registry's JSON, not a second source of truth --
-                        regenerate it any time the registry changes.
+- FrozenRegistry     -- the saved, never-re-rated ratings (one flat CSV on Drive, the
+                        single source of truth for the reference set); later Steps
+                        add checkpoint rungs to it
 
 Every member follows the harness's Agent interface (eval/match.py): a ``name``
 and ``select_move(board) -> UCI string``.
@@ -208,81 +205,87 @@ class FrozenMember:
     notes: dict = field(default_factory=dict)
 
 
-class FrozenRegistry:
-    """The saved ratings of the reference set's measured members (JSON, lives on Drive).
+CSV_FIELDS = ["name", "rating", "ci_low", "ci_high", "games", "pinned", "frozen_on",
+             "stockfish_version", "spec", "notes"]
 
-    Members are only ever added -- never re-rated or overwritten -- so every
-    later rating is measured against exactly the same numbers. The file also
-    records the Stockfish version, because the Stockfish members' strength (and
-    so every frozen number) depends on the exact engine.
+
+class FrozenRegistry:
+    """The reference set's ratings: one flat CSV, the single source of truth (lives on Drive).
+
+    Members are only ever added -- never re-rated or overwritten -- so every later
+    rating is measured against exactly the same numbers. One row per member, pins
+    included (Stockfish 1320's row is its pin itself, ci_low = ci_high = 1320.0 --
+    fixed by definition, never measured, so there's no interval). ``spec``/``notes``
+    are JSON-encoded into their own cell -- one flat CSV throughout, nothing lost
+    (a checkpoint rung's weights hash, representation, masked toggle all round-trip),
+    and every row is self-describing on its own (no separate preamble/header record).
+
+    Every stockfish-kind row carries the engine version it was measured with, since
+    the Stockfish members' strength (and so every frozen number) depends on the exact
+    engine; loading refuses a file that was frozen with a different one.
     """
 
-    def __init__(self, path: str | Path):
-        """Open the registry at ``path`` (created on first save if it doesn't exist)."""
+    def __init__(self, path: str | Path, specs=REFERENCE_SET):
+        """Open the registry at ``path`` (created on first save if it doesn't exist).
+
+        ``specs`` supplies the pin(s) (e.g. sf_1320 = 1320.0) -- always present as a row,
+        even before the file has ever been saved, so ``ratings()``/``fixed_ratings()``
+        work from a brand-new registry the same as a saved one.
+        """
         self.path = Path(path)
+        self.specs = specs
         self.members: dict[str, FrozenMember] = {}
         if self.path.exists():
-            with open(self.path) as f:
-                data = json.load(f)
-            if data.get("stockfish") != SF_VERSION:
-                raise RuntimeError(f"Registry was frozen with {data.get('stockfish')!r}, "
-                                   f"but the code pins {SF_VERSION!r}; its ratings don't carry over")
-            self.members = {n: FrozenMember(**m) for n, m in data["members"].items()}
+            with open(self.path, newline="") as f:
+                for row in csv.DictReader(f):
+                    if row["pinned"] == "True":
+                        continue   # pins come from ``specs``, not stored as members
+                    sf_version = row["stockfish_version"] or None
+                    if sf_version is not None and sf_version != SF_VERSION:
+                        raise RuntimeError(f"{row['name']!r} was frozen with {sf_version!r}, but the "
+                                           f"code pins {SF_VERSION!r}; its rating doesn't carry over")
+                    self.members[row["name"]] = FrozenMember(
+                        name=row["name"], rating=float(row["rating"]), ci_low=float(row["ci_low"]),
+                        ci_high=float(row["ci_high"]), games=int(row["games"]),
+                        spec=json.loads(row["spec"]) if row["spec"] else {},
+                        frozen_on=row["frozen_on"] or None,
+                        notes=json.loads(row["notes"]) if row["notes"] else {})
 
     def __contains__(self, name: str) -> bool:
         """Whether ``name`` is already frozen."""
         return name in self.members
 
     def ratings(self) -> dict[str, float]:
-        """{name: frozen rating} -- pass to fixed_ratings()."""
+        """{name: frozen rating} -- pass to fixed_ratings() (pins are separate; see that function)."""
         return {n: m.rating for n, m in self.members.items()}
 
     def add(self, member: FrozenMember) -> None:
-        """Freeze a new member. Refuses a name that's already frozen (never re-rate)."""
+        """Freeze a new member. Refuses a name that's already frozen (never re-rate) or a pin's name."""
+        if member.name in {s.name for s in self.specs if s.pin is not None}:
+            raise ValueError(f"{member.name!r} is pinned; it can't also be frozen as a member")
         if member.name in self.members:
             raise ValueError(f"{member.name!r} is already frozen at {self.members[member.name].rating:.0f}; "
                              "frozen members are never re-rated")
         self.members[member.name] = member
 
     def save(self) -> None:
-        """Write the registry to its JSON file."""
+        """Write the whole reference set -- pin(s) from ``specs`` + every frozen member -- to the CSV."""
+        rows = []
+        for s in self.specs:
+            if s.pin is not None:
+                rows.append({"name": s.name, "rating": s.pin, "ci_low": s.pin, "ci_high": s.pin,
+                            "games": "", "pinned": True, "frozen_on": "",
+                            "stockfish_version": SF_VERSION if s.kind == "stockfish" else "",
+                            "spec": json.dumps(asdict(s)), "notes": ""})
+        for m in self.members.values():
+            spec_kind = m.spec.get("kind")
+            rows.append({"name": m.name, "rating": round(m.rating, 6), "ci_low": round(m.ci_low, 6),
+                        "ci_high": round(m.ci_high, 6), "games": m.games, "pinned": False,
+                        "frozen_on": m.frozen_on or "",
+                        "stockfish_version": SF_VERSION if spec_kind == "stockfish" else "",
+                        "spec": json.dumps(m.spec), "notes": json.dumps(m.notes)})
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        data = {"stockfish": SF_VERSION, "members": {n: asdict(m) for n, m in self.members.items()}}
-        with open(self.path, "w") as f:
-            json.dump(data, f, indent=2)
-
-
-CSV_FIELDS = ["name", "rating", "ci_low", "ci_high", "games", "pinned", "frozen_on"]
-
-
-def write_reference_set_csv(path: str | Path, registry: FrozenRegistry, specs=REFERENCE_SET) -> list[dict]:
-    """Write the reference set (pin(s) + every frozen member) to a flat CSV at ``path``.
-
-    Inputs: ``registry`` -- the frozen members (rating, CI, games); ``specs`` -- where the
-    pin(s) come from (e.g. ``sf_1320`` = 1320.0). A spec with no pin that isn't in the
-    registry yet (not rated, e.g. random/greedy before Step 5 froze them) is left out --
-    there's no rating to put in a row for it.
-    Output: the rows written (also useful to print/inspect right away).
-
-    Core logic: this is a VIEW onto the registry's JSON, not a second source of truth --
-    it only ever reads, never decides a rating. A pin's row has ci_low = ci_high = the pin
-    itself (fixed by definition, never measured, so there's no interval); a frozen member's
-    row is its measured rating and CI. Regenerate this file any time the registry changes
-    (e.g. after a new freeze) rather than hand-editing it.
-    """
-    rows = []
-    for s in specs:
-        if s.pin is not None:
-            rows.append({"name": s.name, "rating": s.pin, "ci_low": s.pin, "ci_high": s.pin,
-                        "games": None, "pinned": True, "frozen_on": None})
-    for m in registry.members.values():
-        rows.append({"name": m.name, "rating": round(m.rating, 1), "ci_low": round(m.ci_low, 1),
-                    "ci_high": round(m.ci_high, 1), "games": m.games, "pinned": False,
-                    "frozen_on": m.frozen_on})
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=CSV_FIELDS)
-        w.writeheader()
-        w.writerows(rows)
-    return rows
+        with open(self.path, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+            w.writeheader()
+            w.writerows(rows)

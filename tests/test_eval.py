@@ -7,13 +7,17 @@ binary -- run the setup cell in Colab first.
 Run from the repo root:
     python -m pytest tests/test_eval.py -v
 """
+import csv
+import json
+
 import chess
 import numpy as np
 import pytest
 
+from engine.stockfish import SF_VERSION
 from eval.anchors import (CSV_FIELDS, REFERENCE_SET, SMOKE_TEST_OPPONENT, FrozenMember, FrozenRegistry,
-                          GreedyAgent, RandomAgent, StockfishAgent, fixed_ratings, write_reference_set_csv)
-from eval.elo import expected_score, fit_ratings, fit_with_ci, pairs_needing_games
+                          GreedyAgent, RandomAgent, StockfishAgent, fixed_ratings)
+from eval.elo import RATING_LOG_COLUMNS, append_rating_log, expected_score, fit_ratings, fit_with_ci, pairs_needing_games
 from eval.match import evaluate_agent, play_game, play_match, rate_adaptively, summarize, to_results
 
 
@@ -141,6 +145,29 @@ def test_games_from_counts_rating_matches_a_real_color_split_but_ci_is_only_clos
     assert real_est.games == rebuilt_est.games == 15
 
 
+def test_append_rating_log_accumulates_across_evaluations(tmp_path):
+    path = tmp_path / "model_ratings.csv"
+    rng = np.random.default_rng(7)
+    res = simulate("step_10000", 650, "sf_1320", 1320, 40, rng)
+    est = fit_with_ci(res, {"sf_1320": 1320.0}, n_boot=50)["step_10000"]
+
+    row1 = append_rating_log(path, est, run="structured_masked_nall_e10_s0", step=10000,
+                             examples_seen=500000, opponents=["sf_1320"], notes="first screen")
+    assert row1["name"] == "step_10000" and row1["step"] == 10000 and row1["opponents"] == "sf_1320"
+
+    # Re-evaluating the SAME model later (e.g. after more RL training) adds a second row --
+    # it never overwrites the first, unlike FrozenRegistry which refuses a repeat name.
+    res2 = simulate("step_10000", 700, "sf_1320", 1320, 40, rng)
+    est2 = fit_with_ci(res2, {"sf_1320": 1320.0}, n_boot=50)["step_10000"]
+    append_rating_log(path, est2, run="structured_masked_nall_e10_s0", step=10000, examples_seen=600000)
+
+    with open(path) as f:
+        reader = csv.DictReader(f)
+        assert reader.fieldnames == RATING_LOG_COLUMNS
+        rows = list(reader)
+    assert len(rows) == 2 and rows[0]["examples_seen"] == "500000" and rows[1]["examples_seen"] == "600000"
+
+
 def test_adaptive_rule_is_ci_only():
     rng = np.random.default_rng(3)
     fixed = {"a": 1400.0, "b": 1600.0}
@@ -217,7 +244,7 @@ def _member(name, rating):
 
 
 def test_registry_round_trip_and_never_rerates(tmp_path):
-    path = tmp_path / "reference_set.json"
+    path = tmp_path / "reference_set.csv"
     reg = FrozenRegistry(path)
     reg.add(_member("sf_1500", 1480.0))
     reg.save()
@@ -225,6 +252,8 @@ def test_registry_round_trip_and_never_rerates(tmp_path):
     assert reloaded.ratings() == {"sf_1500": 1480.0} and "sf_1500" in reloaded
     with pytest.raises(ValueError):
         reloaded.add(_member("sf_1500", 1510.0))            # frozen members are never re-rated
+    with pytest.raises(ValueError):
+        reloaded.add(_member("sf_1320", 1300.0))            # nor a pin's name
     assert fixed_ratings(REFERENCE_SET, reloaded.ratings()) == {"sf_1320": 1320.0, "sf_1500": 1480.0}
 
 
@@ -233,30 +262,43 @@ def test_frozen_rating_cannot_override_the_pin():
         fixed_ratings(REFERENCE_SET, {"sf_1320": 1300.0})
 
 
-def test_write_reference_set_csv_has_the_pin_and_every_frozen_member(tmp_path):
-    path = tmp_path / "reference_set.json"
+def test_registry_csv_has_the_pin_row_and_every_frozen_member_one_flat_file(tmp_path):
+    # One CSV is the whole reference set -- the pin, plus every frozen member, spec/notes
+    # included (JSON-encoded in their own cell) so nothing needs the registry's Python
+    # object to be readable. This is the single source of truth, not a view onto something else.
+    path = tmp_path / "reference_set.csv"
     reg = FrozenRegistry(path)
-    reg.add(_member("sf_1500", 1480.0))
-    reg.add(_member("random", 525.0))
-    rows = write_reference_set_csv(tmp_path / "reference_set.csv", reg)
-    by_name = {r["name"]: r for r in rows}
-    assert set(by_name) == {"sf_1320", "sf_1500", "random"}   # the pin + both frozen members
-    assert by_name["sf_1320"] == {"name": "sf_1320", "rating": 1320.0, "ci_low": 1320.0,
-                                  "ci_high": 1320.0, "games": None, "pinned": True, "frozen_on": None}
-    assert by_name["random"]["rating"] == 525.0 and by_name["random"]["ci_low"] == 475.0
-    assert by_name["random"]["pinned"] is False and by_name["random"]["games"] == 40
+    reg.add(FrozenMember("sf_1500", 1480.0, 1430.0, 1530.0, games=40,
+                         spec={"name": "sf_1500", "kind": "stockfish", "elo": 1500, "limit": {"time": 0.1}}))
+    reg.add(FrozenMember("step_20000", 719.3, 577.0, 804.0, games=200,
+                         spec={"kind": "sft_checkpoint", "step": 20000, "weights_sha256": "abc123"},
+                         notes={"gpu": "L4"}))
+    reg.save()
 
-    import csv
-    with open(tmp_path / "reference_set.csv") as f:
+    with open(path, newline="") as f:
         reader = csv.DictReader(f)
         assert reader.fieldnames == CSV_FIELDS
-        on_disk = {r["name"]: r for r in reader}
-    assert on_disk["sf_1500"]["rating"] == "1480.0"   # round-trips through disk as text
+        by_name = {r["name"]: r for r in reader}
+    assert set(by_name) == {"sf_1320", "sf_1500", "step_20000"}   # the pin + both frozen members
+    assert by_name["sf_1320"]["pinned"] == "True" and by_name["sf_1320"]["rating"] == "1320.0"
+    assert by_name["sf_1320"]["ci_low"] == by_name["sf_1320"]["ci_high"] == "1320.0"
+    assert by_name["sf_1500"]["stockfish_version"] == SF_VERSION   # stockfish rows are version-tagged
+    assert by_name["step_20000"]["stockfish_version"] == ""        # a checkpoint isn't
+    assert json.loads(by_name["step_20000"]["spec"])["weights_sha256"] == "abc123"   # spec round-trips
+    assert json.loads(by_name["step_20000"]["notes"]) == {"gpu": "L4"}
+
+    reloaded = FrozenRegistry(path)
+    assert reloaded.ratings() == {"sf_1500": 1480.0, "step_20000": 719.3}
+    assert reloaded.members["step_20000"].spec["weights_sha256"] == "abc123"
 
 
 def test_registry_rejects_a_different_stockfish_version(tmp_path):
-    path = tmp_path / "reference_set.json"
-    path.write_text('{"stockfish": "sf_18", "members": {}}')
+    path = tmp_path / "reference_set.csv"
+    reg = FrozenRegistry(path)
+    reg.add(FrozenMember("sf_1500", 1480.0, 1430.0, 1530.0, games=40, spec={"kind": "stockfish"}))
+    reg.save()
+    text = path.read_text().replace(SF_VERSION, "sf_18")
+    path.write_text(text)
     with pytest.raises(RuntimeError):
         FrozenRegistry(path)
 
