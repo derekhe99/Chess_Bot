@@ -16,6 +16,10 @@ Main pieces:
 - pairs_needing_games -- the adaptive-game-count rule for freezing a member:
                     which matchups need more games before its rating is trusted
                     (95% CI still too wide -> more games)
+- games_from_counts -- rebuild one matchup's Results from aggregate win/draw/loss
+                    counts (e.g. copied off a rate_adaptively batch log after an
+                    interrupted run) instead of individual GameRecords -- exact
+                    rating, close-but-not-identical bootstrap CI
 
 Elo-vs-samples and Elo-vs-compute curves (plan Sec 4) are just fit_with_ci run
 once per checkpoint; the plotting lives in the analysis notebook.
@@ -30,6 +34,38 @@ import numpy as np
 
 # One game's result: (white player name, black player name, White's score: 1 / 0.5 / 0).
 Result = tuple[str, str, float]
+
+
+def games_from_counts(a: str, b: str, wins: int, draws: int, losses: int) -> list[Result]:
+    """Rebuild one matchup's Results from ``a``'s aggregate record against ``b``.
+
+    Use this to recover a rating fit when the real per-game records are gone --
+    most commonly, a rate_adaptively() call that was interrupted (Colab
+    disconnect, or a manual stop) before it returned. It only prints each
+    batch's win/draw/loss counts as it goes; nothing is saved until it returns,
+    so an interrupt loses the actual GameRecords. Summing the printed counts
+    across whatever batches did finish and passing them here recovers the same
+    fit fit_with_ci would have produced from the real games.
+
+    This is safe because the Elo model has no first-move/color term --
+    expected_score depends only on the two ratings, so a decisive game
+    contributes the same log-likelihood whether it's recorded as (a, b, 1.0) or
+    (b, a, 0.0). fit_ratings only ever uses each player's TOTAL score and
+    opponent list (never which color, never game order), so the point
+    estimate -- the rating itself -- comes out exactly identical to fitting
+    the real, individually-recorded games.
+
+    The bootstrap CI (fit_with_ci) is a valid nonparametric CI from these
+    counts, but won't be bit-for-bit identical to the CI the real per-game
+    records would have given: its resampling is done by list position within
+    a matchup, and this reconstruction necessarily orders the games
+    differently than they were actually played (all wins first, then draws,
+    then losses) -- the same way re-running fit_with_ci with a different seed
+    lands on a different but equally valid CI. In practice the two are close;
+    only the rating is guaranteed exact. What's lost for good is the per-game
+    detail (PGNs, move latencies, exact color split), not the rating.
+    """
+    return [(a, b, 1.0)] * wins + [(a, b, 0.5)] * draws + [(b, a, 1.0)] * losses
 
 
 @dataclass(frozen=True)

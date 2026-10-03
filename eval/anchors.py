@@ -19,12 +19,17 @@ Main pieces:
 - fixed_ratings      -- pinned ratings + frozen ratings: what the Elo fit holds fixed
 - FrozenRegistry     -- the saved, never-re-rated ratings (JSON on Drive); later
                         Steps add checkpoint rungs to it
+- write_reference_set_csv -- the same ratings as a flat CSV, for analysis code that
+                        doesn't want to parse the registry's nested spec/notes. A view
+                        onto the registry's JSON, not a second source of truth --
+                        regenerate it any time the registry changes.
 
 Every member follows the harness's Agent interface (eval/match.py): a ``name``
 and ``select_move(board) -> UCI string``.
 """
 from __future__ import annotations
 
+import csv
 import datetime as _dt
 import json
 import random
@@ -245,3 +250,39 @@ class FrozenRegistry:
         data = {"stockfish": SF_VERSION, "members": {n: asdict(m) for n, m in self.members.items()}}
         with open(self.path, "w") as f:
             json.dump(data, f, indent=2)
+
+
+CSV_FIELDS = ["name", "rating", "ci_low", "ci_high", "games", "pinned", "frozen_on"]
+
+
+def write_reference_set_csv(path: str | Path, registry: FrozenRegistry, specs=REFERENCE_SET) -> list[dict]:
+    """Write the reference set (pin(s) + every frozen member) to a flat CSV at ``path``.
+
+    Inputs: ``registry`` -- the frozen members (rating, CI, games); ``specs`` -- where the
+    pin(s) come from (e.g. ``sf_1320`` = 1320.0). A spec with no pin that isn't in the
+    registry yet (not rated, e.g. random/greedy before Step 5 froze them) is left out --
+    there's no rating to put in a row for it.
+    Output: the rows written (also useful to print/inspect right away).
+
+    Core logic: this is a VIEW onto the registry's JSON, not a second source of truth --
+    it only ever reads, never decides a rating. A pin's row has ci_low = ci_high = the pin
+    itself (fixed by definition, never measured, so there's no interval); a frozen member's
+    row is its measured rating and CI. Regenerate this file any time the registry changes
+    (e.g. after a new freeze) rather than hand-editing it.
+    """
+    rows = []
+    for s in specs:
+        if s.pin is not None:
+            rows.append({"name": s.name, "rating": s.pin, "ci_low": s.pin, "ci_high": s.pin,
+                        "games": None, "pinned": True, "frozen_on": None})
+    for m in registry.members.values():
+        rows.append({"name": m.name, "rating": round(m.rating, 1), "ci_low": round(m.ci_low, 1),
+                    "ci_high": round(m.ci_high, 1), "games": m.games, "pinned": False,
+                    "frozen_on": m.frozen_on})
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        w.writeheader()
+        w.writerows(rows)
+    return rows

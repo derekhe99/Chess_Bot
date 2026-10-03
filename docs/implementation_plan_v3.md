@@ -13,7 +13,8 @@
 
 **In-place edit, Sep 27, 2026:** the adaptive game-count rule now stops on the 95% CI alone; the "score must be 20–80%" trigger was dropped (Step 5, *Adaptive game counts*).
 **In-place edit, Sep 27, 2026 (Step 3 start):** SFT games come from one Lichess monthly dump (Sec 3.2, Option A); `dataset.py` yields plain records and the prompt is built only in Step 4's `llm_policy.py` (Sec 2.1); phase-mix sampling and dedup stay in the Step 3 gate.
-**In-place edit, Sep 28, 2026 (Step 5 start):** the Step 5 Day-1 config uses structured text, not FEN -- the plan's old wording was stale against the JTBD doc, Step 4's config default, and encoding.py, which already agreed on structured. FEN stays the later 2x2-sweep comparison (Sec 0, board representation toggle).
+
+**In-place edit, Sep 30, 2026 (Step 5 freeze):** the Day-2 checkpoint-rung freeze (Sec 4, Step 5 "Freeze checkpoint rungs") was interrupted mid-run and reconstructed from aggregate win/draw/loss counts (`eval.elo.games_from_counts`) instead of a completed `rate_adaptively` run. Two departures from the rule below, discussed with Derek and accepted as provisional (revisit if there's a spare Colab window, not blocking): every CI came in wider than the +/-100 target (~110-125 Elo half-width, fewer games than a full adaptive run); and `step_15000` was dropped as a rung (too close to `step_20000` to be worth its own member), leaving a single ~600-Elo gap between `step_20000` (719) and `sf_1320` (1320) -- past the "<=300 Elo between neighbors" selection heuristic, which the rule below already marks tentative and Derek's to revise. Frozen: `random` = 525 [384, 624], `greedy` = 641 [495, 724], `step_20000` = 719 [581, 799], in `results/reference_set.json`.
 
 **Scope:** Infrastructure, repo structure, dependencies, and execution order. Pseudocode and the modularity/config design come next.
 
@@ -223,7 +224,7 @@ Load the model with LoRA and a value head; implement masked and unmasked move se
 *Gate:* the untrained base model plays a full game against the random mover in all 4 toggle combinations without crashing (a forfeit by illegal moves counts as a finished game).
 
 **Step 5 — SFT baseline end to end** (`train/sft.py`, `02_train_sft.ipynb`) — **Day-1 milestone**
-Train one config (structured text + masking on) on a small slice, evaluate the checkpoints in the harness.
+Train one config (FEN + masking on) on a small slice, evaluate the checkpoints in the harness.
 
 **Freeze checkpoint rungs** (completes the reference set). Pick ~3 of the checkpoints training already saves to fill the gap between greedy and Stockfish 1320:
 - **Selection (tentative; Derek may revise this later):** pick **by strength, not by training step**. Score the saved checkpoints quickly and choose ones spread evenly through the gap, so neighboring rungs score 20–80% against each other (about 150–300 Elo apart). Fixed step intervals would bunch the rungs together, because learning is fast early and slow late.
@@ -232,7 +233,9 @@ Train one config (structured text + masking on) on a small slice, evaluate the c
 - **Freezing:** record the rating, hash the weights, lock the play settings (always the top legal move), and never retrain or re-rate it. Random and greedy get their ratings in the same fit, through the new rungs.
 - **Known bias:** checkpoint rungs play like an LLM, which may slightly favor the LLM arms. The non-LLM members keep this in check (Step 9 can add an AlphaZero rung).
 
-*Gate:* an Elo number with a confidence interval that beats the untrained model, and a reference set connected from random up to Stockfish 1700 with every member rated and frozen. This validates the whole stack.
+*Gate (revised Oct 1, 2026 -- see note below):* a reference set connected from random up to Stockfish 1700, with every member rated, a confidence interval, and frozen.
+
+> **In-place edit, Oct 1, 2026:** dropped "an Elo number with a confidence interval that beats the untrained model" from this gate. Derek's call: the thing Step 5 actually needs to hand off to Step 7 is a reference set with CIs to rate RL checkpoints against, not a beat-the-untrained-model check on the SFT run itself -- that's a useful sanity signal, but not a gate on whether the reference set is usable.
 
 **Step 6 — Lock the compute budget**
 Using timings from Steps 2–5, set the fixed GPU-hour budget per arm and the per-move inference cap, pin the market-rate price table (Sec 0, Compute accounting), and write them to `base.yaml` / `eval.yaml`. Move to the L4 for all reported runs from here.

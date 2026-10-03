@@ -99,11 +99,62 @@ Rules:
     more unique data rather than fewer epochs on the same 5,000; `checkpoint_every` raised to
     5,000 (was 500) to keep the checkpoint count sane at 10x the steps.
   - **New: `utils/logging.py`** -- `log_experiment()` reads a run's own `run_config.json` /
-    `val_log.csv` / `summary.json` and appends one summary row to the shared
+    `val_log.csv` / checkpoints folder and appends one summary row to the shared
     `results/experiments.csv` (created on first use); `read_experiments()` reads it back
     newest-first. This is what Step 11's Elo-vs-samples curves are built from. The notebook now
     has a one-time backfill cell (logs the Day-1 run above) and a final cell that logs each
-    live run, leaving only the one-line `finding` for Derek to write.
+    live run, leaving only the one-line `finding` for Derek to write. Deliberately stopping a
+    run early (it never returns from `train()`) used to break this, since `summary.json` is
+    only written on return; fixed by reading `examples_seen` off `val_log.csv` and the
+    checkpoint count off the checkpoints folder directly instead, neither of which needs the
+    run to have finished.
+  - **Day-2 run (Sep 29-30), stopped early at step 25,000** of a 28,110-step budget (full
+    44,982-position train split, not high value to run to completion once the checkpoints
+    needed were already saved). Logged via the fix above.
+  - **New: `games_from_counts()`** (`eval/elo.py`) -- rebuilds a matchup's individual game
+    results from aggregate win/draw/loss counts (e.g. copied off a `rate_adaptively` batch
+    log after an interrupted run). The rating it produces is exactly identical to fitting the
+    real per-game records (the Elo fit only ever uses a player's total score and opponent
+    list, never color or order); the bootstrap CI is valid but not bit-for-bit identical,
+    since `fit_with_ci` resamples by list position and the reconstruction necessarily orders
+    games differently than they were actually played. Tested in `tests/test_eval.py`.
+  - **Checkpoint rungs frozen (Sep 30), completing the reference set** -- `random`, `greedy`,
+    `step_20000` added to `results/reference_set.json` (`sf_1320` pinned, `sf_1500`/`sf_1700`
+    already frozen in Step 2): `random` = 525 [384, 624], `greedy` = 641 [495, 724],
+    `step_20000` = 719 [581, 799] (200 games each, `sf_1320` pinned at 1320; exact numbers
+    depend on the live `n_boot` seed). **Reconstructed, not from a completed live run:** the
+    `rate_adaptively` cell was interrupted (`KeyboardInterrupt`) during batch 2; frozen instead
+    from `games_from_counts()` on the pasted per-batch counts (batch 0 + batch 1 complete, all
+    10 matchups; batch 2 partial, 5 of 10). Two known departures from the plan's Sec 4 freeze
+    rule, both accepted by Derek as provisional (Sep 30), to revisit if there's a spare Colab
+    window, not blocking further work:
+    - Every CI here is wider (~110-125 Elo half-width) than the plan's +/-100 target -- fewer
+      games than a full adaptive run to convergence.
+    - `step_15000` (693) was dropped as a separate rung -- too close to `step_20000` to be
+      worth its own member -- leaving a single ~600-Elo gap between `step_20000` (719) and
+      `sf_1320` (1320), well past the plan's own tentative "no gap >~300 Elo between
+      neighbors" selection heuristic. `step_15000`'s games were kept in the joint fit (dropping
+      them entirely nearly doubles the CI half-width), just not frozen as its own rung. Expected
+      to close as later SFT/RL checkpoints get frozen in.
+  - **Source of truth for the reference set:** `results/reference_set.json` on Drive
+    (`eval.anchors.FrozenRegistry`) -- one entry per frozen member (rating, CI, games, a spec
+    that can rebuild and replay it exactly, and notes on how it was measured). Members are
+    only ever added, never re-rated. Every future model is scored against it the same way:
+    `eval.match.evaluate_agent(new_model, opponents_built_from_the_registry, fixed_ratings(...),
+    n_games)` fits only the new model's rating, holding every reference-set member fixed, so
+    the scale never drifts. Also saved as a flat CSV (`results/reference_set.csv`, same
+    numbers) for quick loading outside the registry's own JSON shape.
+  - **Gate revised (Oct 1, 2026):** dropped "beats the untrained model" from the Step 5 gate
+    (plan Sec 4) -- Derek's call. What Step 7 actually needs from Step 5 is a reference set
+    with CIs to rate RL checkpoints against; a beat-the-untrained-model check is a useful
+    sanity signal on the SFT run, not a gate on the reference set's usability.
+  - **Not yet pushed to GitHub:** everything above from Sep 30 on (`eval/elo.py`,
+    `tests/test_eval.py`, `notebooks/02_train_sft.ipynb`, this file, the plan doc) exists only
+    in Derek's local working tree -- `git status` shows them modified, unstaged. Since Colab
+    clones fresh from GitHub each session, **the live `results/reference_set.json` on Drive
+    still only has Step 2's `sf_1500`/`sf_1700`** -- the freeze code was never actually run
+    there. Commit + push, then rerun the notebook's freeze cells in Colab, to actually update
+    Drive's copy.
 - Not wired up yet: `configs/base.yaml: drive_root` is unused; the setup notebook
   hardcodes `DRIVE_ROOT`. Resolve as part of the config-design alignment point.
 

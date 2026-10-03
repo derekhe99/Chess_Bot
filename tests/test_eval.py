@@ -11,8 +11,8 @@ import chess
 import numpy as np
 import pytest
 
-from eval.anchors import (REFERENCE_SET, SMOKE_TEST_OPPONENT, FrozenMember, FrozenRegistry, GreedyAgent,
-                          RandomAgent, StockfishAgent, fixed_ratings)
+from eval.anchors import (CSV_FIELDS, REFERENCE_SET, SMOKE_TEST_OPPONENT, FrozenMember, FrozenRegistry,
+                          GreedyAgent, RandomAgent, StockfishAgent, fixed_ratings, write_reference_set_csv)
 from eval.elo import expected_score, fit_ratings, fit_with_ci, pairs_needing_games
 from eval.match import evaluate_agent, play_game, play_match, rate_adaptively, summarize, to_results
 
@@ -90,6 +90,55 @@ def test_bootstrap_ci_brackets_truth():
     assert est.ci_low < 1450 < est.ci_high
     assert est.ci_low < est.rating < est.ci_high
     assert est.games == 400 and 0 < est.score < 1
+
+
+def test_games_from_counts_color_label_never_changes_the_fit():
+    # Relabeling which side is nominally "white" can't change the fit -- the Elo model has
+    # no first-move/color term, so (a, b, score) and (b, a, 1-score) are the same game. Flip
+    # every other entry's label (same outcome for "c" at each position, opposite recorded
+    # side) so the two lists agree index-for-index: fit_with_ci's bootstrap resamples BY
+    # INDEX within a matchup, so lining up positions like this is what actually isolates the
+    # "color label doesn't matter" claim -- comparing two differently-ORDERED game lists
+    # would not (see the next test).
+    from eval.elo import games_from_counts
+    rebuilt = games_from_counts("c", "a", wins=5, draws=4, losses=6)
+    relabeled = [(bn, wn, 1.0 - s) if i % 2 == 0 else (wn, bn, s) for i, (wn, bn, s) in enumerate(rebuilt)]
+    assert relabeled != rebuilt  # actually exercises a color flip, not a no-op
+    assert any(wn == "a" for wn, _, _ in relabeled) and any(bn == "a" for _, bn, _ in relabeled)
+    fixed = {"a": 1400.0}
+    rebuilt_est, relabeled_est = fit_with_ci(rebuilt, fixed, n_boot=200)["c"], fit_with_ci(relabeled, fixed, n_boot=200)["c"]
+    assert relabeled_est.rating == pytest.approx(rebuilt_est.rating, abs=1e-9)
+    assert relabeled_est.ci_low == pytest.approx(rebuilt_est.ci_low, abs=1e-9)
+    assert relabeled_est.ci_high == pytest.approx(rebuilt_est.ci_high, abs=1e-9)
+    assert relabeled_est.games == rebuilt_est.games == 15
+
+
+def test_games_from_counts_rating_matches_a_real_color_split_but_ci_is_only_close():
+    # A real matchup with "c"'s record split across both colors, in real play order (not
+    # index-aligned with the reconstruction this time). The rating still matches exactly --
+    # fit_ratings only ever uses each player's TOTAL score and opponent list, so it can't see
+    # game order. The CI is only close, not identical: fit_with_ci's bootstrap resamples LIST
+    # POSITIONS within a matchup (same rng draws -> same index picks), and games_from_counts
+    # puts them in a different order than this real list, so a given bootstrap draw pulls a
+    # different sub-sample of outcomes from each list. Both CIs are equally valid nonparametric
+    # bootstraps over the same underlying record -- they just land on different (but close)
+    # random realizations, the same way re-running fit_with_ci with a different seed would.
+    from eval.elo import games_from_counts
+    real = ([("c", "a", 1.0)] * 3 + [("c", "a", 0.5)] * 2 + [("c", "a", 0.0)] * 3      # "c" as white: 3W 2D 3L
+           + [("a", "c", 0.0)] * 2 + [("a", "c", 0.5)] * 2 + [("a", "c", 1.0)] * 3)     # "c" as black: 2W 2D 3L
+    rebuilt = games_from_counts("c", "a", wins=5, draws=4, losses=6)
+    assert len(real) == len(rebuilt) == 15
+    fixed = {"a": 1400.0}
+    # n_boot=3000: the gap between the two orderings' CIs is itself just Monte Carlo noise
+    # (it shrinks as n_boot grows -- both converge to the same theoretical bootstrap
+    # distribution, since that distribution depends only on the multiset of outcomes, not
+    # their order). 3000 is enough to keep the two within a reasonable band without making
+    # the test slow; the tolerance below is deliberately loose, not a tight equality check.
+    real_est, rebuilt_est = fit_with_ci(real, fixed, n_boot=3000)["c"], fit_with_ci(rebuilt, fixed, n_boot=3000)["c"]
+    assert real_est.rating == pytest.approx(rebuilt_est.rating, abs=1e-6)
+    assert real_est.ci_low == pytest.approx(rebuilt_est.ci_low, abs=20)
+    assert real_est.ci_high == pytest.approx(rebuilt_est.ci_high, abs=20)
+    assert real_est.games == rebuilt_est.games == 15
 
 
 def test_adaptive_rule_is_ci_only():
@@ -182,6 +231,27 @@ def test_registry_round_trip_and_never_rerates(tmp_path):
 def test_frozen_rating_cannot_override_the_pin():
     with pytest.raises(ValueError):
         fixed_ratings(REFERENCE_SET, {"sf_1320": 1300.0})
+
+
+def test_write_reference_set_csv_has_the_pin_and_every_frozen_member(tmp_path):
+    path = tmp_path / "reference_set.json"
+    reg = FrozenRegistry(path)
+    reg.add(_member("sf_1500", 1480.0))
+    reg.add(_member("random", 525.0))
+    rows = write_reference_set_csv(tmp_path / "reference_set.csv", reg)
+    by_name = {r["name"]: r for r in rows}
+    assert set(by_name) == {"sf_1320", "sf_1500", "random"}   # the pin + both frozen members
+    assert by_name["sf_1320"] == {"name": "sf_1320", "rating": 1320.0, "ci_low": 1320.0,
+                                  "ci_high": 1320.0, "games": None, "pinned": True, "frozen_on": None}
+    assert by_name["random"]["rating"] == 525.0 and by_name["random"]["ci_low"] == 475.0
+    assert by_name["random"]["pinned"] is False and by_name["random"]["games"] == 40
+
+    import csv
+    with open(tmp_path / "reference_set.csv") as f:
+        reader = csv.DictReader(f)
+        assert reader.fieldnames == CSV_FIELDS
+        on_disk = {r["name"]: r for r in reader}
+    assert on_disk["sf_1500"]["rating"] == "1480.0"   # round-trips through disk as text
 
 
 def test_registry_rejects_a_different_stockfish_version(tmp_path):
