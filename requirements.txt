@@ -7,6 +7,7 @@ datasets
 huggingface_hub
 zstandard
 pandas
+matplotlib  # 02 notebook loss curves (Colab had it preinstalled)
 pyarrow
 pyyaml
 numpy
