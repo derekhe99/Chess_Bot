@@ -1,2 +1,5 @@
-# Anchors, games per matchup, per-move budget.
-# TODO: fill in during Step 2 / locked in Step 6.
+# Evaluating a model against the frozen reference set (plan v4, Sec 0 "Eval").
+results_file: results/results.csv    # under artifact_root; the one file of record
+games_per_opponent: 20               # minimum; add +20 by hand only if the CI is wider than +/-200
+batch_games: 10                      # results.csv row is overwritten after every batch
+opponents_per_model: 3               # the 2-3 reference members nearest the model's expected Elo

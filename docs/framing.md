@@ -14,8 +14,13 @@ file.
    game; unmasked arms self-play unmasked, and their illegal-move rate over training is an
    observed outcome.
 
+**In-place edit, Oct 10, 2026 (plan v4, 80/20 review):** no strict equal compute budgets --
+arms are compared on Elo-vs-compute curves; 1 seed per arm (more later if time allows);
+no per-move inference cap (sec/move is measured and costed instead); dollars are hours x
+one RunPod hourly rate. Marked `> Update (v4)` below.
+
 This is Derek's framing of *why* the project exists and what it should teach; the
-implementation plan (`docs/implementation_plan_v3.md`) is *what* gets built and *how*.
+implementation plan (`docs/implementation_plan_v4.md`) is *what* gets built and *how*.
 The `> Review note` lines are comments from the Sep 23 review, kept because they explain
 decisions the plan later locked in. `> Update (v2)` lines mark what changed in this
 version. **Where this doc and the plan differ, the plan wins.**
@@ -27,6 +32,9 @@ version. **Where this doc and the plan differ, the plan wins.**
 **A:** I want to understand how different model architectures and different training
 regimes and different scaffolds impacts the ability for a model to "hill-climb" elo in
 chess, which has its own set of unique constraints. We are assuming a fixed budget.
+
+> Update (v4): not a strict equal budget per arm. Each arm trains to plateau or a loose
+> cap, and arms are compared on Elo vs. compute (GPU-hours and dollars) curves.
 
 More concretely, the learning outcomes are:
 
@@ -102,6 +110,9 @@ More concretely, the learning outcomes are:
     - Update (v2): also convert hours to dollars at a pinned market rental rate (not the
       Colab bill). Report dollars to reach a given Elo, inference cost per game, and
       amortized training cost per game at stated lifetime game counts
+    > Update (v4): no per-move inference cap and no token/FLOP counts. Report training
+    > GPU-hours (+ labeling CPU-hours for SFT arms), seconds per move from eval games, and
+    > dollars at one pinned RunPod hourly rate; cost-per-game variants are analysis-only.
   - Inference time - how quickly to produce the output move
 
 ## Engineering
@@ -187,6 +198,8 @@ More concretely, the learning outcomes are:
       > Stockfish levels alone.
     - Run 2-3 seeds per RL arm; start with a small number of eval games per matchup and
       scale up later, rather than hundreds all at once
+      > Update (v4): 1 seed per arm, more later if time allows. ~20 games per opponent;
+      > CIs are reported as they come, no CI target.
     - Sequencing: build the SFT-on-Stockfish baseline end-to-end first (data pipeline,
       training, eval producing an Elo number) to validate the whole stack before parallel
       MCTS/self-play

@@ -24,7 +24,7 @@ from __future__ import annotations
 import random
 import time
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Callable, Protocol
 
 import chess
 import chess.pgn
@@ -213,7 +213,7 @@ def summarize(records: list[GameRecord], name: str) -> dict:
 def rate_adaptively(agents: dict[str, Agent], pairs: list[tuple[str, str]], fixed: dict[str, float],
                     candidates: list[str], *, start_games: int = 20, step_games: int = 20,
                     max_games_per_pair: int = 100, ci_half_width: float = 100.0,
-                    n_boot: int = 1000, seed: int = 0,
+                    n_boot: int = 1000, seed: int = 0, on_batch: Callable[[dict[str, RatingEstimate], list[dict]], None] | None = None,
                     verbose: bool = True, **match_kwargs) -> tuple[dict[str, RatingEstimate], list[GameRecord], list[dict]]:
     """Rate new reference-set members, adding games only where they're needed (plan v3, Step 5).
 
@@ -227,6 +227,8 @@ def rate_adaptively(agents: dict[str, Agent], pairs: list[tuple[str, str]], fixe
       max_games_per_pair -- cap; a matchup never goes past this
       ci_half_width      -- stopping rule: each candidate's 95% CI within +/- this
                             (see elo.pairs_needing_games)
+      on_batch           -- called after EVERY batch (not just the last) with
+                            (estimates, log) so far -- see "Why on_batch" below
     Output: (estimates for all non-fixed players, every game record,
              a log with one entry per batch: games per matchup so far + matchups still short)
 
@@ -234,6 +236,10 @@ def rate_adaptively(agents: dict[str, Agent], pairs: list[tuple[str, str]], fixe
     which matchups are still short. Play ``step_games`` more in just those, refit,
     and repeat until nothing is short or every short matchup has hit the cap.
     A matchup that hits the cap is reported, not hidden -- judge it by hand.
+
+    Why on_batch: this function only returns once nothing is left short, which can
+    take a long time; a callback that saves ``estimates`` after each batch means a
+    stop or disconnect loses at most the batch in flight.
     """
     if start_games % 2 or step_games % 2 or max_games_per_pair % 2:
         raise ValueError("game counts must be even (games come in color-swapped pairs)")
@@ -260,33 +266,51 @@ def rate_adaptively(agents: dict[str, Agent], pairs: list[tuple[str, str]], fixe
         capped = sorted(tuple(sorted(k)) for k in short if played[k] >= max_games_per_pair)
         log.append({"batch": round_no, "games": {"-".join(by_key[k]): v for k, v in played.items()},
                     "short": sorted("-".join(sorted(k)) for k in short), "capped": ["-".join(c) for c in capped]})
-        batch = {k: min(step_games, max_games_per_pair - played[k]) for k in short if played[k] < max_games_per_pair}
+        if on_batch is not None:
+            on_batch(estimates, log)
         if verbose:
             print(f"batch {round_no} done: {len(short)} matchup(s) short, {len(capped)} at the cap")
+        batch = {k: min(step_games, max_games_per_pair - played[k]) for k in short if played[k] < max_games_per_pair}
         if not batch:
             return estimates, records, log
         round_no += 1
 
 
 def evaluate_agent(agent: Agent, opponents: dict[str, Agent], ratings: dict[str, float], n_games: int, *,
+                   batch_games: int | None = None,
+                   on_batch: Callable[[RatingEstimate, list[GameRecord]], None] | None = None,
                    n_boot: int = 1000, seed: int = 0, verbose: bool = True,
                    **match_kwargs) -> tuple[RatingEstimate, list[GameRecord]]:
     """Rate one model against the frozen reference set; only its own rating is fitted.
 
     Inputs:
-      agent     -- the player being rated (e.g. an SFT checkpoint)
-      opponents -- {name: agent} reference-set members to play; each must have a
-                   rating in ``ratings``
-      ratings   -- fixed ratings: the pin plus frozen members (anchors.fixed_ratings)
-      n_games   -- games per opponent (start small, scale up for final numbers)
-    Output: (the agent's RatingEstimate, all game records for logging)
+      agent       -- the player being rated (e.g. an SFT checkpoint)
+      opponents   -- {name: agent} reference-set members to play; each must have a
+                     rating in ``ratings``
+      ratings     -- fixed ratings: the pin plus reference members (ResultsTable.fixed())
+      n_games     -- games per opponent in total (plan v4: 20)
+      batch_games -- play this many per opponent at a time (plan v4: 10); None = all at once
+      on_batch    -- called after every batch with (estimate so far, all records so far);
+                     pass one that does ResultsTable.log_model(...) + save(), so stopping
+                     the run at any point keeps the latest Elo + CI
+    Output: (the agent's final RatingEstimate, all game records)
     """
     missing = [n for n in opponents if n not in ratings]
     if missing:
         raise ValueError(f"No known rating for {missing} -- rate and freeze them first")
+    batch = batch_games or n_games
+    if batch % 2:
+        raise ValueError("batch_games must be even (games come in color-swapped pairs)")
     everyone = {agent.name: agent, **opponents}
-    records = play_pairs(everyone, [(agent.name, n) for n in opponents], n_games,
-                         seed=seed, verbose=verbose, **match_kwargs)
-    estimate = fit_with_ci(to_results(records), {n: ratings[n] for n in opponents},
-                           n_boot=n_boot, seed=seed)[agent.name]
+    fixed = {n: ratings[n] for n in opponents}
+    records: list[GameRecord] = []
+    played, k = 0, 0
+    while played < n_games:
+        n = min(batch, n_games - played)
+        records += play_pairs(everyone, [(agent.name, o) for o in opponents], n,
+                              seed=seed + 1_000 * k, verbose=verbose, **match_kwargs)
+        played, k = played + n, k + 1
+        estimate = fit_with_ci(to_results(records), fixed, n_boot=n_boot, seed=seed)[agent.name]
+        if on_batch is not None:
+            on_batch(estimate, records)
     return estimate, records

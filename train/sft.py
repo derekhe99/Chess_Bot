@@ -16,7 +16,7 @@ losses. A checkpoint (adapters + value head) is saved every ``checkpoint_every``
 steps, plus step 0 = the untrained model, so the Elo-vs-training curve has a
 starting point and Step 5 can pick checkpoint rungs for the reference set.
 
-Colab-proof: every checkpoint also writes ``resume.pt`` (optimizer state and
+Disconnect-proof: every checkpoint also writes ``resume.pt`` (optimizer state and
 counters). Calling train() again on the same run folder continues from the last
 checkpoint and gives the same weights as an uninterrupted run (the data order
 and dropout are seeded per epoch / per step, so no hidden random state is lost).
@@ -30,7 +30,8 @@ Main pieces:
 - validate           -- held-out losses + how often the masked pick equals Stockfish's move
 - train              -- the resumable training loop
 - list_checkpoints / load_checkpoint -- find and load saved checkpoints for eval
-- screen_checkpoints -- a quick rough rating of every checkpoint (Step 5's first look)
+- gpu_hours_at       -- cumulative training GPU-hours at a checkpoint (results.csv's
+                        train_gpu_hours, the x-axis of the Elo-vs-compute curve)
 """
 from __future__ import annotations
 
@@ -57,7 +58,7 @@ from model.llm_policy import IGNORE_INDEX, LLMPolicy, PolicyConfig
 class TrainConfig:
     """All SFT settings. Defaults mirror configs/sft.yaml ``train:`` (agreed Sep 28, 2026)."""
 
-    dataset: str = "sft_2013-06_d12_n50000"  # folder under Drive data/processed/
+    dataset: str = "sft_2013-06_d12_n50000"  # folder under <artifact_root>/data/processed/
     train_positions: int | None = None  # None or >= split size = the whole train split;
                                         # Day-1 used 5000 (a seeded random slice)
     val_positions: int = 1000          # held-out positions for validation losses
@@ -448,42 +449,18 @@ def train(policy: LLMPolicy, train_ds, val_ds, cfg: TrainConfig, run_dir: str | 
     return summary
 
 
-# ------------------------------------------------------ quick screening ----
+# --------------------------------------------------------- compute used ----
 
-def screen_checkpoints(run_dir: str | Path, opponents: dict, fixed: dict[str, float], n_games: int, *,
-                       steps: list[int] | None = None, device: str | None = None, seed: int = 0,
-                       loader=None, verbose: bool = True, **match_kwargs):
-    """A quick, rough rating of each checkpoint -- where did training land on the Elo scale?
+def gpu_hours_at(run_dir: str | Path, step: int) -> float:
+    """Cumulative training GPU-hours when ``step`` was reached (0 for step 0).
 
-    Inputs:
-      run_dir   -- the training run's folder
-      opponents -- {name: agent}: e.g. random, greedy, and Stockfish 1320
-      fixed     -- ratings held fixed (the pin, plus any frozen members that play)
-      n_games   -- games per checkpoint per opponent (small: this is a first look)
-      steps     -- which checkpoints (default: all)
-      loader    -- step_dir -> agent (default load_checkpoint; tests pass a tiny one)
-    Output: (estimates {name: RatingEstimate} for every non-fixed player, all game records)
-
-    Core logic: checkpoints are loaded one at a time (only one copy of the model
-    in GPU memory), each plays every opponent, and then ONE Elo fit over all the
-    games rates the checkpoints -- and random and greedy with them, since
-    checkpoints that score against both greedy and Stockfish 1320 link the two
-    ends. If no checkpoint takes points off Stockfish 1320, the fit says so
-    (the ratings are flagged off the scale), which is exactly the thing to know
-    before picking checkpoint rungs.
+    Read off the run's train_log.csv (``gpu_seconds_train`` is a running total,
+    logged every ``log_every`` steps; checkpoint steps are multiples of it).
     """
-    from eval.elo import fit_with_ci
-    from eval.match import play_pairs, to_results
-
-    loader = loader or (lambda d: load_checkpoint(d, device=device))
-    chosen = [(s, d) for s, d in list_checkpoints(run_dir) if steps is None or s in steps]
-    records = []
-    for s, d in chosen:
-        agent = loader(d)
-        agent.name = f"step_{s}"
-        records += play_pairs({agent.name: agent, **opponents}, [(agent.name, o) for o in opponents],
-                              n_games, seed=seed + s, verbose=verbose, **match_kwargs)
-        del agent
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    return fit_with_ci(to_results(records), fixed, seed=seed), records
+    if step == 0:
+        return 0.0
+    with open(Path(run_dir) / "train_log.csv", newline="") as f:
+        rows = [r for r in csv.DictReader(f) if int(r["step"]) <= step]
+    if not rows:
+        raise ValueError(f"no train_log.csv row at or before step {step}")
+    return round(float(rows[-1]["gpu_seconds_train"]) / 3600, 4)

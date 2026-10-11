@@ -23,7 +23,7 @@ policy:
 # Training (train/sft.py -> TrainConfig).
 #
 # Day-1 run (Sep 28, 2026): train_positions=5000, checkpoint_every=500. Logged in
-# results/experiments.csv (utils/logging.py): real move-selection learning (val_top1
+# the (since-cut) experiments log: real move-selection learning (val_top1
 # 3% -> ~21%) but no checkpoint ever scored a point off Stockfish 1320 in the screen, so
 # the reference set doesn't connect yet (Step 5 gate not met). val_move_loss also
 # degraded after ~epoch 5 while val_top1 kept climbing -- overfitting on repeating the

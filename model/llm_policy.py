@@ -234,7 +234,7 @@ class LLMPolicy:
         """Save only what training changes: LoRA adapters, value head, and the config.
 
         The frozen base model is never saved (re-download it). Optimizer state
-        and resume logic belong to training (Step 5, utils/checkpoint.py).
+        and resume logic belong to training (train/sft.py, train/llm_rl.py, ...).
         """
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)

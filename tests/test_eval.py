@@ -2,22 +2,21 @@
 
 Intent: prove each harness piece works on small, fast cases before spending
 real compute on long matches (plan v3, Step 2). The Stockfish tests skip (not fail) without the
-binary -- run the setup cell in Colab first.
+binary -- run the setup notebook first.
 
 Run from the repo root:
     python -m pytest tests/test_eval.py -v
 """
 import csv
-import json
 
 import chess
 import numpy as np
 import pytest
 
 from engine.stockfish import SF_VERSION
-from eval.anchors import (CSV_FIELDS, REFERENCE_SET, SMOKE_TEST_OPPONENT, FrozenMember, FrozenRegistry,
-                          GreedyAgent, RandomAgent, StockfishAgent, fixed_ratings)
-from eval.elo import RATING_LOG_COLUMNS, append_rating_log, expected_score, fit_ratings, fit_with_ci, pairs_needing_games
+from eval.anchors import (RESULTS_COLUMNS, REFERENCE_SET, SMOKE_TEST_OPPONENT, GreedyAgent, RandomAgent,
+                          ResultsTable, StockfishAgent, fixed_ratings)
+from eval.elo import expected_score, fit_ratings, fit_with_ci, pairs_needing_games
 from eval.match import evaluate_agent, play_game, play_match, rate_adaptively, summarize, to_results
 
 
@@ -96,78 +95,6 @@ def test_bootstrap_ci_brackets_truth():
     assert est.games == 400 and 0 < est.score < 1
 
 
-def test_games_from_counts_color_label_never_changes_the_fit():
-    # Relabeling which side is nominally "white" can't change the fit -- the Elo model has
-    # no first-move/color term, so (a, b, score) and (b, a, 1-score) are the same game. Flip
-    # every other entry's label (same outcome for "c" at each position, opposite recorded
-    # side) so the two lists agree index-for-index: fit_with_ci's bootstrap resamples BY
-    # INDEX within a matchup, so lining up positions like this is what actually isolates the
-    # "color label doesn't matter" claim -- comparing two differently-ORDERED game lists
-    # would not (see the next test).
-    from eval.elo import games_from_counts
-    rebuilt = games_from_counts("c", "a", wins=5, draws=4, losses=6)
-    relabeled = [(bn, wn, 1.0 - s) if i % 2 == 0 else (wn, bn, s) for i, (wn, bn, s) in enumerate(rebuilt)]
-    assert relabeled != rebuilt  # actually exercises a color flip, not a no-op
-    assert any(wn == "a" for wn, _, _ in relabeled) and any(bn == "a" for _, bn, _ in relabeled)
-    fixed = {"a": 1400.0}
-    rebuilt_est, relabeled_est = fit_with_ci(rebuilt, fixed, n_boot=200)["c"], fit_with_ci(relabeled, fixed, n_boot=200)["c"]
-    assert relabeled_est.rating == pytest.approx(rebuilt_est.rating, abs=1e-9)
-    assert relabeled_est.ci_low == pytest.approx(rebuilt_est.ci_low, abs=1e-9)
-    assert relabeled_est.ci_high == pytest.approx(rebuilt_est.ci_high, abs=1e-9)
-    assert relabeled_est.games == rebuilt_est.games == 15
-
-
-def test_games_from_counts_rating_matches_a_real_color_split_but_ci_is_only_close():
-    # A real matchup with "c"'s record split across both colors, in real play order (not
-    # index-aligned with the reconstruction this time). The rating still matches exactly --
-    # fit_ratings only ever uses each player's TOTAL score and opponent list, so it can't see
-    # game order. The CI is only close, not identical: fit_with_ci's bootstrap resamples LIST
-    # POSITIONS within a matchup (same rng draws -> same index picks), and games_from_counts
-    # puts them in a different order than this real list, so a given bootstrap draw pulls a
-    # different sub-sample of outcomes from each list. Both CIs are equally valid nonparametric
-    # bootstraps over the same underlying record -- they just land on different (but close)
-    # random realizations, the same way re-running fit_with_ci with a different seed would.
-    from eval.elo import games_from_counts
-    real = ([("c", "a", 1.0)] * 3 + [("c", "a", 0.5)] * 2 + [("c", "a", 0.0)] * 3      # "c" as white: 3W 2D 3L
-           + [("a", "c", 0.0)] * 2 + [("a", "c", 0.5)] * 2 + [("a", "c", 1.0)] * 3)     # "c" as black: 2W 2D 3L
-    rebuilt = games_from_counts("c", "a", wins=5, draws=4, losses=6)
-    assert len(real) == len(rebuilt) == 15
-    fixed = {"a": 1400.0}
-    # n_boot=3000: the gap between the two orderings' CIs is itself just Monte Carlo noise
-    # (it shrinks as n_boot grows -- both converge to the same theoretical bootstrap
-    # distribution, since that distribution depends only on the multiset of outcomes, not
-    # their order). 3000 is enough to keep the two within a reasonable band without making
-    # the test slow; the tolerance below is deliberately loose, not a tight equality check.
-    real_est, rebuilt_est = fit_with_ci(real, fixed, n_boot=3000)["c"], fit_with_ci(rebuilt, fixed, n_boot=3000)["c"]
-    assert real_est.rating == pytest.approx(rebuilt_est.rating, abs=1e-6)
-    assert real_est.ci_low == pytest.approx(rebuilt_est.ci_low, abs=20)
-    assert real_est.ci_high == pytest.approx(rebuilt_est.ci_high, abs=20)
-    assert real_est.games == rebuilt_est.games == 15
-
-
-def test_append_rating_log_accumulates_across_evaluations(tmp_path):
-    path = tmp_path / "model_ratings.csv"
-    rng = np.random.default_rng(7)
-    res = simulate("step_10000", 650, "sf_1320", 1320, 40, rng)
-    est = fit_with_ci(res, {"sf_1320": 1320.0}, n_boot=50)["step_10000"]
-
-    row1 = append_rating_log(path, est, run="structured_masked_nall_e10_s0", step=10000,
-                             examples_seen=500000, opponents=["sf_1320"], notes="first screen")
-    assert row1["name"] == "step_10000" and row1["step"] == 10000 and row1["opponents"] == "sf_1320"
-
-    # Re-evaluating the SAME model later (e.g. after more RL training) adds a second row --
-    # it never overwrites the first, unlike FrozenRegistry which refuses a repeat name.
-    res2 = simulate("step_10000", 700, "sf_1320", 1320, 40, rng)
-    est2 = fit_with_ci(res2, {"sf_1320": 1320.0}, n_boot=50)["step_10000"]
-    append_rating_log(path, est2, run="structured_masked_nall_e10_s0", step=10000, examples_seen=600000)
-
-    with open(path) as f:
-        reader = csv.DictReader(f)
-        assert reader.fieldnames == RATING_LOG_COLUMNS
-        rows = list(reader)
-    assert len(rows) == 2 and rows[0]["examples_seen"] == "500000" and rows[1]["examples_seen"] == "600000"
-
-
 def test_adaptive_rule_is_ci_only():
     rng = np.random.default_rng(3)
     fixed = {"a": 1400.0, "b": 1600.0}
@@ -206,6 +133,37 @@ def test_rate_adaptively_stops_when_done_and_at_the_cap():
     assert len(recs) == 4 and len(log) == 1
 
 
+def test_rate_adaptively_on_batch_fires_every_batch_so_an_interrupt_loses_nothing():
+    # on_batch is the fix for the Sep 30 incident: everything rate_adaptively knows after
+    # each batch gets handed to the caller immediately, not just once the whole call
+    # returns -- so a caller that persists it (e.g. to results.csv)
+    # never loses more than the games in the batch that was interrupted mid-flight.
+    agents = {"r1": RandomAgent("r1", seed=1), "r2": RandomAgent("r2", seed=2)}
+    seen = []
+    rate_adaptively(agents, [("r1", "r2")], {"r1": 300.0}, ["r2"], start_games=4, step_games=2,
+                    max_games_per_pair=8, ci_half_width=-1.0, n_boot=20, verbose=False, max_plies=20,
+                    on_batch=lambda estimates, log: seen.append((dict(estimates), len(log))))
+    assert len(seen) == 3                                   # one call per batch: games 4, 6, 8 (the cap)
+    assert [n for _, n in seen] == [1, 2, 3]                 # log grows by one entry each time
+    assert all("r2" in est for est, _ in seen)               # the live estimate was already there each time
+
+    class _Boom(Exception):
+        pass
+
+    captured = {}
+
+    def _save_then_blow_up(estimates, log):
+        captured["last"] = dict(estimates)
+        if len(log) == 2:
+            raise _Boom("simulated interrupt after the second batch")
+
+    with pytest.raises(_Boom):
+        rate_adaptively(agents, [("r1", "r2")], {"r1": 300.0}, ["r2"], start_games=4, step_games=2,
+                        max_games_per_pair=8, ci_half_width=-1.0, n_boot=20, verbose=False, max_plies=20,
+                        on_batch=_save_then_blow_up)
+    assert "r2" in captured["last"]                          # the batch-2 estimate survived the exception
+
+
 # -------------------------------------------------------------- anchors ----
 
 def test_random_agent_is_legal_and_reproducible():
@@ -239,68 +197,63 @@ def test_reference_set_matches_plan_v3():
     assert fixed_ratings() == {"sf_1320": 1320.0}          # the one pin; everything else is measured
 
 
-def _member(name, rating):
-    return FrozenMember(name, rating, rating - 50, rating + 50, games=40, spec={"kind": "test"})
-
-
-def test_registry_round_trip_and_never_rerates(tmp_path):
-    path = tmp_path / "reference_set.csv"
-    reg = FrozenRegistry(path)
-    reg.add(_member("sf_1500", 1480.0))
-    reg.save()
-    reloaded = FrozenRegistry(path)
-    assert reloaded.ratings() == {"sf_1500": 1480.0} and "sf_1500" in reloaded
-    with pytest.raises(ValueError):
-        reloaded.add(_member("sf_1500", 1510.0))            # frozen members are never re-rated
-    with pytest.raises(ValueError):
-        reloaded.add(_member("sf_1320", 1300.0))            # nor a pin's name
-    assert fixed_ratings(REFERENCE_SET, reloaded.ratings()) == {"sf_1320": 1320.0, "sf_1500": 1480.0}
-
-
-def test_frozen_rating_cannot_override_the_pin():
-    with pytest.raises(ValueError):
-        fixed_ratings(REFERENCE_SET, {"sf_1320": 1300.0})
-
-
-def test_registry_csv_has_the_pin_row_and_every_frozen_member_one_flat_file(tmp_path):
-    # One CSV is the whole reference set -- the pin, plus every frozen member, spec/notes
-    # included (JSON-encoded in their own cell) so nothing needs the registry's Python
-    # object to be readable. This is the single source of truth, not a view onto something else.
-    path = tmp_path / "reference_set.csv"
-    reg = FrozenRegistry(path)
-    reg.add(FrozenMember("sf_1500", 1480.0, 1430.0, 1530.0, games=40,
-                         spec={"name": "sf_1500", "kind": "stockfish", "elo": 1500, "limit": {"time": 0.1}}))
-    reg.add(FrozenMember("step_20000", 719.3, 577.0, 804.0, games=200,
-                         spec={"kind": "sft_checkpoint", "step": 20000, "weights_sha256": "abc123"},
-                         notes={"gpu": "L4"}))
-    reg.save()
-
+def test_results_table_pin_reference_model_one_file(tmp_path):
+    path = tmp_path / "results.csv"
+    t = ResultsTable(path)
+    assert t.role("sf_1320") == "pin" and t.fixed() == {"sf_1320": 1320.0}   # pin exists before any save
+    t.add_reference("sf_1500", 1580.0, 1500.0, 1673.0, 160, spec={"kind": "stockfish"})
+    t.add_reference("step_20000", 719.3, 577.0, 804.0, 200,
+                    spec={"kind": "sft_checkpoint", "run": "r", "step": 20000})
+    t.save()
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
-        assert reader.fieldnames == CSV_FIELDS
-        by_name = {r["name"]: r for r in reader}
-    assert set(by_name) == {"sf_1320", "sf_1500", "step_20000"}   # the pin + both frozen members
-    assert by_name["sf_1320"]["pinned"] == "True" and by_name["sf_1320"]["rating"] == "1320.0"
-    assert by_name["sf_1320"]["ci_low"] == by_name["sf_1320"]["ci_high"] == "1320.0"
-    assert by_name["sf_1500"]["stockfish_version"] == SF_VERSION   # stockfish rows are version-tagged
-    assert by_name["step_20000"]["stockfish_version"] == ""        # a checkpoint isn't
-    assert json.loads(by_name["step_20000"]["spec"])["weights_sha256"] == "abc123"   # spec round-trips
-    assert json.loads(by_name["step_20000"]["notes"]) == {"gpu": "L4"}
-
-    reloaded = FrozenRegistry(path)
-    assert reloaded.ratings() == {"sf_1500": 1480.0, "step_20000": 719.3}
-    assert reloaded.members["step_20000"].spec["weights_sha256"] == "abc123"
+        assert reader.fieldnames == RESULTS_COLUMNS
+        assert [r["role"] for r in reader] == ["pin", "reference", "reference"]
+    back = ResultsTable(path)
+    assert back.fixed() == {"sf_1320": 1320.0, "sf_1500": 1580.0, "step_20000": 719.3}
+    assert back.spec("step_20000")["step"] == 20000
 
 
-def test_registry_rejects_a_different_stockfish_version(tmp_path):
-    path = tmp_path / "reference_set.csv"
-    reg = FrozenRegistry(path)
-    reg.add(FrozenMember("sf_1500", 1480.0, 1430.0, 1530.0, games=40, spec={"kind": "stockfish"}))
-    reg.save()
-    text = path.read_text().replace(SF_VERSION, "sf_18")
-    path.write_text(text)
+def test_results_table_refuses_to_rerate_a_reference_or_pin(tmp_path):
+    t = ResultsTable(tmp_path / "results.csv")
+    t.add_reference("greedy", 641.0, 492.0, 724.0, 200, spec={"kind": "greedy"})
+    with pytest.raises(ValueError):
+        t.add_reference("greedy", 700.0, 600.0, 800.0, 40, spec={"kind": "greedy"})
+    with pytest.raises(ValueError):
+        t.add_reference("sf_1320", 1300.0, 1300.0, 1300.0, 40, spec={"kind": "stockfish"})
+    est = fit_with_ci(simulate("greedy", 641, "sf_1320", 1320, 20, np.random.default_rng(0)),
+                      {"sf_1320": 1320.0}, n_boot=20)["greedy"]
+    with pytest.raises(ValueError):
+        t.log_model(est)                                   # a model eval can't overwrite a reference row
+
+
+def test_results_table_model_row_is_overwritten_each_batch(tmp_path):
+    path = tmp_path / "results.csv"
+    t = ResultsTable(path)
+    anchors = {"greedy": GreedyAgent(seed=1), "random": RandomAgent("random", seed=2)}
+    seen = []
+
+    def save(est, recs):
+        t.log_model(est, recs, run="run_a", step=500, train_gpu_hours=0.5, gpu="test")
+        t.save()
+        seen.append(ResultsTable(path).rows["candidate"]["games"])
+
+    evaluate_agent(RandomAgent("candidate", seed=3), anchors, {"greedy": 600.0, "random": 300.0},
+                   n_games=4, batch_games=2, on_batch=save, n_boot=20, verbose=False, max_plies=40)
+    assert seen == ["4", "8"]                              # one row, updated after each batch
+    row = ResultsTable(path).rows["candidate"]
+    assert row["role"] == "model" and row["run"] == "run_a" and row["train_gpu_hours"] == "0.5"
+    assert float(row["sec_per_move"]) >= 0 and float(row["illegal_rate"]) == 0.0
+
+
+def test_results_table_rejects_a_different_stockfish_version(tmp_path):
+    path = tmp_path / "results.csv"
+    t = ResultsTable(path)
+    t.add_reference("sf_1500", 1580.0, 1500.0, 1673.0, 160, spec={"kind": "stockfish"})
+    t.save()
+    path.write_text(path.read_text().replace(SF_VERSION, "sf_18"))
     with pytest.raises(RuntimeError):
-        FrozenRegistry(path)
+        ResultsTable(path)
 
 
 # ---------------------------------------------------------------- match ----

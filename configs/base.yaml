@@ -1,7 +1,18 @@
-# Paths, seed, GPU type, compute budget.
-# TODO: fill in during Step 0/6 (see plan Sec 1, Sec 6).
-seed: null
-gpu_type: null        # must match every reported run, e.g. "L4"
-compute_budget_gpu_hours: null
-drive_root: null
-repo_root: null
+# Paths, hardware, and cost constants (plan v4, Sec 0 "Compute accounting" + Sec 1).
+
+# Where artifacts live (data/processed, checkpoints/, results/results.csv).
+# RunPod network volume from Step 6 on. (Steps 0-5 used /content/drive/MyDrive/chess-ai.)
+artifact_root: /workspace/chess-ai
+
+gpu_type: L4                   # every reported run; results.csv logs the actual GPU per row
+
+# Hourly prices that turn hours into dollars in the analysis notebook.
+# Pin in Step 6: RunPod on-demand L4 price, plus a CPU price for Stockfish labeling time.
+gpu_usd_per_hour: null         # TODO Step 6 -- source + date in the comment
+cpu_usd_per_hour: null         # TODO Step 6 -- source + date in the comment
+
+# Stockfish labeling time charged to every SFT-using arm (data/processed/.../manifest.json).
+label_cpu_hours: 0.99
+
+# Loose safety cap on training GPU-hours per arm (not an equal budget). Set in Step 7.
+max_gpu_hours_per_arm: null

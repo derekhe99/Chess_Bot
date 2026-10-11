@@ -1,6 +1,6 @@
 """Turns game results into Elo ratings with confidence intervals.
 
-Intent: put every agent on one scale that never drifts (plan v3, Sec 0 "Eval").
+Intent: put every agent on one scale that never drifts (plan v4, Sec 0 "Eval").
 Some ratings are held fixed -- the pin (Stockfish 1320 = 1320) and the frozen
 members of the reference set -- and only the unknown players are fitted. The
 same math is used twice: once to rate new reference-set members from games
@@ -16,62 +16,21 @@ Main pieces:
 - pairs_needing_games -- the adaptive-game-count rule for freezing a member:
                     which matchups need more games before its rating is trusted
                     (95% CI still too wide -> more games)
-- games_from_counts -- rebuild one matchup's Results from aggregate win/draw/loss
-                    counts (e.g. copied off a rate_adaptively batch log after an
-                    interrupted run) instead of individual GameRecords -- exact
-                    rating, close-but-not-identical bootstrap CI
-- append_rating_log -- one row per time a model (not a frozen anchor) is rated
-                    against the reference set (`results/model_ratings.csv`) --
-                    what Step 11's Elo-vs-samples / Elo-vs-compute curves read
 
-Elo-vs-samples and Elo-vs-compute curves (plan Sec 4) are just fit_with_ci run
-once per checkpoint; the plotting lives in the analysis notebook.
+Saving ratings is eval.anchors.ResultsTable's job (results/results.csv); the
+Elo-vs-compute curves are fit_with_ci run once per checkpoint, plotted in the
+analysis notebook.
 """
 from __future__ import annotations
 
-import csv
-import datetime as _dt
 from collections import defaultdict
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Iterable, Sequence
 
 import numpy as np
 
 # One game's result: (white player name, black player name, White's score: 1 / 0.5 / 0).
 Result = tuple[str, str, float]
-
-
-def games_from_counts(a: str, b: str, wins: int, draws: int, losses: int) -> list[Result]:
-    """Rebuild one matchup's Results from ``a``'s aggregate record against ``b``.
-
-    Use this to recover a rating fit when the real per-game records are gone --
-    most commonly, a rate_adaptively() call that was interrupted (Colab
-    disconnect, or a manual stop) before it returned. It only prints each
-    batch's win/draw/loss counts as it goes; nothing is saved until it returns,
-    so an interrupt loses the actual GameRecords. Summing the printed counts
-    across whatever batches did finish and passing them here recovers the same
-    fit fit_with_ci would have produced from the real games.
-
-    This is safe because the Elo model has no first-move/color term --
-    expected_score depends only on the two ratings, so a decisive game
-    contributes the same log-likelihood whether it's recorded as (a, b, 1.0) or
-    (b, a, 0.0). fit_ratings only ever uses each player's TOTAL score and
-    opponent list (never which color, never game order), so the point
-    estimate -- the rating itself -- comes out exactly identical to fitting
-    the real, individually-recorded games.
-
-    The bootstrap CI (fit_with_ci) is a valid nonparametric CI from these
-    counts, but won't be bit-for-bit identical to the CI the real per-game
-    records would have given: its resampling is done by list position within
-    a matchup, and this reconstruction necessarily orders the games
-    differently than they were actually played (all wins first, then draws,
-    then losses) -- the same way re-running fit_with_ci with a different seed
-    lands on a different but equally valid CI. In practice the two are close;
-    only the rating is guaranteed exact. What's lost for good is the per-game
-    detail (PGNs, move latencies, exact color split), not the rating.
-    """
-    return [(a, b, 1.0)] * wins + [(a, b, 0.5)] * draws + [(b, a, 1.0)] * losses
 
 
 @dataclass(frozen=True)
@@ -311,48 +270,3 @@ def format_table(estimates: Iterable[RatingEstimate]) -> str:
         lines.append(f"{e.name:<16}{e.rating:>7.0f}{f'[{e.ci_low:.0f}, {e.ci_high:.0f}]':>18}"
                      f"{e.games:>7}{e.score:>7.2f}  {note}")
     return "\n".join(lines)
-
-
-RATING_LOG_COLUMNS = ["name", "run", "step", "examples_seen", "date", "rating", "ci_low", "ci_high",
-                      "games", "score", "at_bound", "opponents", "notes"]
-
-
-def append_rating_log(path: str | Path, estimate: RatingEstimate, *, run: str, step: int | None = None,
-                      examples_seen: int | None = None, opponents: Iterable[str] = (),
-                      notes: str = "") -> dict:
-    """Append one row for a just-evaluated model to the shared ratings log (CSV).
-
-    Inputs:
-      path          -- the shared CSV (e.g. "results/model_ratings.csv"); created with a
-                       header on first use
-      estimate      -- evaluate_agent()'s RatingEstimate for this model (rating/CI/games/
-                       score/at_bound) -- NOT a FrozenRegistry entry: this model isn't a
-                       frozen anchor, it's one more point for the Elo-vs-samples /
-                       Elo-vs-compute curves (plan Sec 4, Step 11)
-      run, step     -- which training run and checkpoint this is (ties a row back to
-                       results/experiments.csv's run_name/step)
-      examples_seen -- for the Elo-vs-samples curve x-axis; pull it off the run's val_log.csv
-      opponents     -- which reference-set members it played (e.g. list(FIXED))
-      notes         -- anything else worth keeping (free text)
-    Output: the row that was written.
-
-    Core logic: this is a running history, not a frozen set -- the same model can be
-    re-evaluated later (after more RL training, say) and gets a NEW row, never overwriting
-    the old one. That's the opposite of FrozenRegistry (anchors.py), which never re-rates.
-    Keeping the two separate means re-scoring a model never risks corrupting the reference
-    set it was scored against.
-    """
-    row = {"name": estimate.name, "run": run, "step": step, "examples_seen": examples_seen,
-           "date": _dt.date.today().isoformat(), "rating": round(estimate.rating, 1),
-           "ci_low": round(estimate.ci_low, 1), "ci_high": round(estimate.ci_high, 1),
-           "games": estimate.games, "score": round(estimate.score, 4), "at_bound": estimate.at_bound,
-           "opponents": "|".join(opponents), "notes": notes}
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    new = not path.exists()
-    with open(path, "a", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=RATING_LOG_COLUMNS)
-        if new:
-            w.writeheader()
-        w.writerow(row)
-    return row

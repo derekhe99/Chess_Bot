@@ -4,7 +4,7 @@ What they prove: the batched training loss is exactly -log P(move) as play
 scores it (padding and the logits shortcut change nothing); the value head reads
 the same hidden state in training and play; training actually lowers the loss;
 an interrupted-and-resumed run ends with the same weights as an uninterrupted
-one; and the checkpoint screen plays and rates every checkpoint.
+one.
 
     python -m pytest tests/test_sft.py -v
 """
@@ -22,11 +22,10 @@ pytest.importorskip("peft")
 
 from data.dataset import PositionDataset
 from engine import board as B
-from eval.anchors import GreedyAgent, RandomAgent
 from model.llm_policy import IGNORE_INDEX, LLMPolicy, PolicyConfig
 from tests.test_llm_policy import positions, tiny_model, tiny_tokenizer
 from train.sft import (TrainConfig, _load_adapters, batch_losses, collate, encode, list_checkpoints,
-                       run_name, screen_checkpoints, subset, train)
+                       run_name, subset, train)
 
 
 @pytest.fixture(scope="module")
@@ -168,22 +167,3 @@ def test_step_zero_is_the_untrained_model(tok, tmp_path):
     _load_adapters(loaded, step0)
     board = chess.Board()
     assert fresh.score_moves(board, B.legal_moves(board)) == loaded.score_moves(board, B.legal_moves(board))
-
-
-# -------------------------------------------------------------- screening ----
-
-def test_screen_rates_every_checkpoint(tok, tmp_path):
-    ds = dataset(8)
-    train(make_policy(tok), ds, ds, small_cfg(epochs=2), tmp_path / "run", log=lambda *_: None)
-
-    def loader(step_dir):
-        p = make_policy(tok)
-        _load_adapters(p, step_dir)
-        return p
-
-    opponents = {"random": RandomAgent(seed=1), "greedy": GreedyAgent(seed=2)}
-    estimates, records = screen_checkpoints(tmp_path / "run", opponents, {"greedy": 500.0}, n_games=2,
-                                            loader=loader, verbose=False, max_plies=30)
-    steps = [s for s, _ in list_checkpoints(tmp_path / "run")]
-    assert set(estimates) == {f"step_{s}" for s in steps} | {"random"}
-    assert len(records) == len(steps) * 2 * 2

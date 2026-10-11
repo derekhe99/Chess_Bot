@@ -1,12 +1,12 @@
 """The reference set: the frozen opponents every agent is rated against.
 
 Intent: a set of opponents whose ratings never change, so an agent's Elo can be
-read off from how it scores against them (plan v3, Sec 0 "Eval"). Exactly one
+read off from how it scores against them (plan v4, Sec 0 "Eval"). Exactly one
 rating is pinned by definition: Stockfish UCI_Elo 1320 = 1320. Every other
 member is rated once -- from games among the members -- and then frozen:
-Stockfish 1500 and 1700 in Step 2; random, greedy, and ~3 early SFT
-checkpoints in Step 5 (random and greedy lose every game to Stockfish 1320,
-so they can't be rated until the checkpoints bridge the gap).
+Stockfish 1500 and 1700 in Step 2; random, greedy, and the SFT checkpoint
+step_20000 in Step 5 (random and greedy lose every game to Stockfish 1320,
+so they couldn't be rated until a checkpoint bridged the gap).
 
 Main pieces:
 - RandomAgent        -- plays a uniformly random legal move
@@ -17,9 +17,9 @@ Main pieces:
                         depth 1, used only to smoke-test the harness
 - build_agents / close_agents -- turn specs into playable agents, and shut them down
 - fixed_ratings      -- pinned ratings + frozen ratings: what the Elo fit holds fixed
-- FrozenRegistry     -- the saved, never-re-rated ratings (one flat CSV on Drive, the
-                        single source of truth for the reference set); later Steps
-                        add checkpoint rungs to it
+- build_reference_agents -- playable agents for reference rows (incl. checkpoint rungs)
+- ResultsTable       -- results/results.csv, the one file of record: the pin, the frozen
+                        reference set, and every evaluated model (plan v4, Sec 2.2)
 
 Every member follows the harness's Agent interface (eval/match.py): a ``name``
 and ``select_move(board) -> UCI string``.
@@ -133,7 +133,7 @@ class AnchorSpec:
 
 # The starting reference set (plan v3). To change a Stockfish level, edit its
 # elo/name here; to change which rating is the pin, move `pin=`. Checkpoint
-# rungs are added in Step 5 via FrozenRegistry, not here.
+# rungs live in results.csv (ResultsTable.add_reference), not here.
 _SF_LIMIT = {"time": 0.1}
 REFERENCE_SET: tuple[AnchorSpec, ...] = (
     AnchorSpec("random", "random", seed=1),
@@ -174,7 +174,7 @@ def close_agents(agents: dict) -> None:
 def fixed_ratings(specs=REFERENCE_SET, frozen: dict[str, float] | None = None) -> dict[str, float]:
     """Ratings the Elo fit holds fixed: the pin(s) from ``specs`` plus any frozen ratings.
 
-    Inputs: member specs; ``frozen`` = {name: rating}, e.g. FrozenRegistry.ratings().
+    Inputs: member specs; ``frozen`` = {name: rating}, e.g. ResultsTable.ratings().
     Output: {name: rating}. A frozen rating may never overwrite a pin.
     """
     ratings = {s.name: float(s.pin) for s in specs if s.pin is not None}
@@ -185,107 +185,141 @@ def fixed_ratings(specs=REFERENCE_SET, frozen: dict[str, float] | None = None) -
     return ratings
 
 
-@dataclass(frozen=True)
-class FrozenMember:
-    """One frozen member of the reference set: its rating and how it was measured.
+def build_reference_agents(results: "ResultsTable", names, artifact_root: str | Path, *, device=None) -> dict:
+    """{name: playable agent} for reference members, from their results.csv rows.
 
-    spec  -- enough to rebuild and play it exactly as it was rated: an AnchorSpec
-             as a dict, or (Step 5) a checkpoint's path, weights hash, and locked
-             play settings
-    notes -- anything else worth keeping (e.g. opponents, games per pair)
+    Stockfish / random / greedy members come from REFERENCE_SET; checkpoint rungs
+    (spec kind "sft_checkpoint") are loaded from
+    <artifact_root>/checkpoints/sft/<run>/checkpoints/step_NNNNNN. Call close_agents when done.
     """
+    specs = {s.name: s for s in results.specs}
+    agents = {}
+    for name in names:
+        if results.role(name) not in ("pin", "reference"):
+            raise ValueError(f"{name!r} is not a reference member in {results.path}")
+        spec = results.spec(name)
+        if spec.get("kind") == "sft_checkpoint":
+            from train.sft import load_checkpoint  # lazy: pulls in torch/transformers
+            step_dir = Path(artifact_root) / "checkpoints" / "sft" / spec["run"] / "checkpoints" / f"step_{spec['step']:06d}"
+            agents[name] = load_checkpoint(step_dir, device=device, name=name)
+        else:
+            agents[name] = build_anchor(specs[name])
+    return agents
 
-    name: str
-    rating: float
-    ci_low: float
-    ci_high: float
-    games: int
-    spec: dict
-    frozen_on: str = field(default_factory=lambda: _dt.date.today().isoformat())
-    notes: dict = field(default_factory=dict)
+
+RESULTS_COLUMNS = ["name", "role", "rating", "ci_low", "ci_high", "games", "run", "step", "seed",
+                   "train_gpu_hours", "label_cpu_hours", "sec_per_move", "illegal_rate", "gpu",
+                   "stockfish_version", "date", "spec", "note"]
+ROLES = ("pin", "reference", "model")
 
 
-CSV_FIELDS = ["name", "rating", "ci_low", "ci_high", "games", "pinned", "frozen_on",
-             "stockfish_version", "spec", "notes"]
+class ResultsTable:
+    """``results/results.csv``: the project's one file of record (plan v4, Sec 2.2).
 
+    One row per player. ``role`` says what the row is:
+      pin       -- fixed by definition (sf_1320 = 1320); always taken from ``specs``
+      reference -- rated once, then frozen: the opponents every model is rated against
+      model     -- an evaluated checkpoint; overwritten after every eval batch, so a
+                   stopped run keeps its latest Elo + CI. What the Step 11 charts plot.
+    Reference and pin rows are never overwritten. A model can later be promoted to a
+    reference (a new rung) with ``add_reference`` under the same name.
 
-class FrozenRegistry:
-    """The reference set's ratings: one flat CSV, the single source of truth (lives on Drive).
-
-    Members are only ever added -- never re-rated or overwritten -- so every later
-    rating is measured against exactly the same numbers. One row per member, pins
-    included (Stockfish 1320's row is its pin itself, ci_low = ci_high = 1320.0 --
-    fixed by definition, never measured, so there's no interval). ``spec``/``notes``
-    are JSON-encoded into their own cell -- one flat CSV throughout, nothing lost
-    (a checkpoint rung's weights hash, representation, masked toggle all round-trip),
-    and every row is self-describing on its own (no separate preamble/header record).
-
-    Every stockfish-kind row carries the engine version it was measured with, since
-    the Stockfish members' strength (and so every frozen number) depends on the exact
-    engine; loading refuses a file that was frozen with a different one.
+    Every rating depends on the exact Stockfish build, so loading refuses a file whose
+    reference rows were measured with a different version.
     """
 
     def __init__(self, path: str | Path, specs=REFERENCE_SET):
-        """Open the registry at ``path`` (created on first save if it doesn't exist).
-
-        ``specs`` supplies the pin(s) (e.g. sf_1320 = 1320.0) -- always present as a row,
-        even before the file has ever been saved, so ``ratings()``/``fixed_ratings()``
-        work from a brand-new registry the same as a saved one.
-        """
+        """Open ``path`` (created on first save). Pin rows always exist, even before a save."""
         self.path = Path(path)
         self.specs = specs
-        self.members: dict[str, FrozenMember] = {}
+        self.rows: dict[str, dict] = {}
         if self.path.exists():
             with open(self.path, newline="") as f:
                 for row in csv.DictReader(f):
-                    if row["pinned"] == "True":
-                        continue   # pins come from ``specs``, not stored as members
-                    sf_version = row["stockfish_version"] or None
-                    if sf_version is not None and sf_version != SF_VERSION:
-                        raise RuntimeError(f"{row['name']!r} was frozen with {sf_version!r}, but the "
-                                           f"code pins {SF_VERSION!r}; its rating doesn't carry over")
-                    self.members[row["name"]] = FrozenMember(
-                        name=row["name"], rating=float(row["rating"]), ci_low=float(row["ci_low"]),
-                        ci_high=float(row["ci_high"]), games=int(row["games"]),
-                        spec=json.loads(row["spec"]) if row["spec"] else {},
-                        frozen_on=row["frozen_on"] or None,
-                        notes=json.loads(row["notes"]) if row["notes"] else {})
+                    v = row.get("stockfish_version") or None
+                    if row["role"] != "model" and v is not None and v != SF_VERSION:
+                        raise RuntimeError(f"{row['name']!r} was rated with {v!r}, but the code pins "
+                                           f"{SF_VERSION!r}; its rating doesn't carry over")
+                    self.rows[row["name"]] = {k: row.get(k, "") for k in RESULTS_COLUMNS}
+        for s in specs:
+            if s.pin is not None:
+                self.rows[s.name] = self._row(s.name, "pin", s.pin, s.pin, s.pin, "",
+                                              spec=asdict(s), stockfish_version=SF_VERSION)
 
-    def __contains__(self, name: str) -> bool:
-        """Whether ``name`` is already frozen."""
-        return name in self.members
+    @staticmethod
+    def _row(name, role, rating, ci_low, ci_high, games, **fields) -> dict:
+        row = {k: "" for k in RESULTS_COLUMNS}
+        row.update(name=name, role=role, rating=round(float(rating), 1), ci_low=round(float(ci_low), 1),
+                   ci_high=round(float(ci_high), 1), games=games, date=_dt.date.today().isoformat())
+        for k, v in fields.items():
+            if k not in RESULTS_COLUMNS:
+                raise KeyError(f"unknown results column {k!r}")
+            row[k] = json.dumps(v) if k == "spec" and isinstance(v, dict) else v
+        return row
+
+    def role(self, name: str) -> str | None:
+        """"pin", "reference", "model", or None if ``name`` has no row."""
+        row = self.rows.get(name)
+        return row["role"] if row else None
 
     def ratings(self) -> dict[str, float]:
-        """{name: frozen rating} -- pass to fixed_ratings() (pins are separate; see that function)."""
-        return {n: m.rating for n, m in self.members.items()}
+        """{name: rating} for reference rows (pins excluded -- fixed_ratings adds those)."""
+        return {n: float(r["rating"]) for n, r in self.rows.items() if r["role"] == "reference"}
 
-    def add(self, member: FrozenMember) -> None:
-        """Freeze a new member. Refuses a name that's already frozen (never re-rate) or a pin's name."""
-        if member.name in {s.name for s in self.specs if s.pin is not None}:
-            raise ValueError(f"{member.name!r} is pinned; it can't also be frozen as a member")
-        if member.name in self.members:
-            raise ValueError(f"{member.name!r} is already frozen at {self.members[member.name].rating:.0f}; "
-                             "frozen members are never re-rated")
-        self.members[member.name] = member
+    def fixed(self) -> dict[str, float]:
+        """Everything an Elo fit holds fixed: pin(s) + reference ratings."""
+        return fixed_ratings(self.specs, self.ratings())
+
+    def spec(self, name: str) -> dict:
+        """The JSON ``spec`` cell of a row, decoded (how to rebuild that player)."""
+        cell = self.rows[name]["spec"]
+        return json.loads(cell) if cell else {}
+
+    def add_reference(self, name: str, rating: float, ci_low: float, ci_high: float, games: int, *,
+                      spec: dict, note: str = "") -> None:
+        """Freeze a new reference member. Refuses an existing pin or reference name."""
+        if self.role(name) in ("pin", "reference"):
+            raise ValueError(f"{name!r} is already a {self.role(name)}; frozen ratings are never re-rated")
+        sf = SF_VERSION if spec.get("kind") == "stockfish" else ""
+        self.rows[name] = self._row(name, "reference", rating, ci_low, ci_high, games, spec=spec,
+                                    note=note, stockfish_version=sf)
+
+    def log_model(self, estimate, records=(), **fields) -> dict:
+        """Write (or overwrite) a model's row from an Elo estimate and its eval games.
+
+        Inputs: ``estimate`` -- a RatingEstimate (eval.elo); ``records`` -- the eval
+        GameRecords, used for sec_per_move and illegal_rate; ``fields`` -- any other
+        RESULTS_COLUMNS (run, step, seed, train_gpu_hours, label_cpu_hours, gpu, note).
+        Call it after every eval batch, then ``save()``: stopping early keeps the last batch.
+        """
+        name = estimate.name
+        if self.role(name) in ("pin", "reference"):
+            raise ValueError(f"{name!r} is a {self.role(name)} row; it can't be overwritten by a model eval")
+        moves = illegal = 0
+        seconds = 0.0
+        for r in records:
+            side = "white" if r.white == name else "black" if r.black == name else None
+            if side:
+                moves += len(r.latency[side])
+                seconds += sum(r.latency[side])
+                illegal += r.illegal_attempts[side]
+        if moves:
+            fields.setdefault("sec_per_move", round(seconds / moves, 4))
+            fields.setdefault("illegal_rate", round(illegal / moves, 4))
+        if estimate.at_bound:
+            fields["note"] = (f"OFF SCALE ({estimate.at_bound}) " + str(fields.get("note", ""))).strip()
+        self.rows[name] = self._row(name, "model", estimate.rating, estimate.ci_low, estimate.ci_high,
+                                    estimate.games, **fields)
+        return self.rows[name]
 
     def save(self) -> None:
-        """Write the whole reference set -- pin(s) from ``specs`` + every frozen member -- to the CSV."""
-        rows = []
-        for s in self.specs:
-            if s.pin is not None:
-                rows.append({"name": s.name, "rating": s.pin, "ci_low": s.pin, "ci_high": s.pin,
-                            "games": "", "pinned": True, "frozen_on": "",
-                            "stockfish_version": SF_VERSION if s.kind == "stockfish" else "",
-                            "spec": json.dumps(asdict(s)), "notes": ""})
-        for m in self.members.values():
-            spec_kind = m.spec.get("kind")
-            rows.append({"name": m.name, "rating": round(m.rating, 6), "ci_low": round(m.ci_low, 6),
-                        "ci_high": round(m.ci_high, 6), "games": m.games, "pinned": False,
-                        "frozen_on": m.frozen_on or "",
-                        "stockfish_version": SF_VERSION if spec_kind == "stockfish" else "",
-                        "spec": json.dumps(m.spec), "notes": json.dumps(m.notes)})
+        """Write every row: pins, then references, then models."""
+        order = {r: i for i, r in enumerate(ROLES)}
+        rows = sorted(self.rows.values(), key=lambda r: order[r["role"]])
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.path, "w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        tmp = self.path.with_suffix(".tmp")
+        with open(tmp, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=RESULTS_COLUMNS)
             w.writeheader()
             w.writerows(rows)
+        tmp.replace(self.path)  # never leaves a half-written file behind
