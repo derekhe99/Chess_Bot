@@ -78,7 +78,7 @@ Rules:
    pod with a network volume at `/workspace`. Repo cloned once to `/workspace/Chess_Bot`;
    each session `git fetch && git checkout <branch> && git reset --hard origin/<branch>`
    (code is never edited on the pod). Long jobs run headless in tmux:
-   `jupyter nbconvert --to notebook --execute notebooks/XX.ipynb --output-dir /workspace/chess-ai/logs`
+   `jupyter nbconvert --to notebook --execute notebooks/XX.ipynb --output-dir /workspace/chess-ai/logs --ExecutePreprocessor.timeout=-1`
    (executed copy goes to the volume, repo stays clean); end them with
    `runpodctl stop pod $RUNPOD_POD_ID`. `HF_TOKEN` is a pod environment variable.
 3. **Artifacts** — `artifact_root` in `configs/base.yaml` (`/workspace/chess-ai`):

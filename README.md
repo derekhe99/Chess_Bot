@@ -26,4 +26,4 @@ Spec: `docs/implementation_plan_v4.md` (the what and how), `docs/framing.md` (th
 ## Setup
 RunPod (Step 6 on): on-demand L4 pod + network volume at `/workspace`; clone this repo to
 `/workspace/Chess_Bot`, set `HF_TOKEN`, run `notebooks/00_setup.ipynb`. Long jobs:
-`jupyter nbconvert --to notebook --execute notebooks/XX.ipynb --output-dir /workspace/chess-ai/logs` inside tmux.
+`jupyter nbconvert --to notebook --execute notebooks/XX.ipynb --output-dir /workspace/chess-ai/logs --ExecutePreprocessor.timeout=-1` inside tmux.
