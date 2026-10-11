@@ -8,7 +8,7 @@ gpu_type: L4                   # every reported run; results.csv logs the actual
 
 # Hourly prices that turn hours into dollars in the analysis notebook.
 # Pin in Step 6: RunPod on-demand L4 price, plus a CPU price for Stockfish labeling time.
-gpu_usd_per_hour: null         # TODO Step 6 -- source + date in the comment
+gpu_usd_per_hour: 0.59         # TODO Step 6 -- RunPod on 10/11/2026
 cpu_usd_per_hour: null         # TODO Step 6 -- source + date in the comment
 
 # Stockfish labeling time charged to every SFT-using arm (data/processed/.../manifest.json).
