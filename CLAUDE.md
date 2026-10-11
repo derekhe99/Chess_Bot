@@ -108,5 +108,7 @@ Rules:
 - **Stockfish is pinned to 19** (`SF_VERSION = "sf_19"` in `engine/stockfish.py`;
   `ensure_stockfish()` asserts the version). Every rating in `results.csv` depends on the
   exact engine; never upgrade it without discussing it first.
-- `torchao>=0.16.0` is pinned because Colab's preinstalled version broke peft's LoRA
-  dispatch; harmless elsewhere.
+- **No `torchao` in requirements.** It was pinned for Colab (whose preinstalled copy broke
+  peft's LoRA). On RunPod it isn't preinstalled, and the latest torchao needs a newer torch
+  than the pod image has; if it's installed at all, `transformers` imports it and model
+  loading crashes (`cannot import name 'ScalingType'`). Fix on a pod: `pip uninstall -y torchao`.
