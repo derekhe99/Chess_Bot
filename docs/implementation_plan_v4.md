@@ -218,6 +218,7 @@ RL design (provisional defaults in `configs/llm_rl.yaml`; revisit after the test
 - *Loss:* policy gradient (−advantage × log P(move)) + KL penalty toward the SFT model on the played move (weight 0.1) + value loss (BCE vs. the score, weight 1.0). One pass over the round's positions, 256 positions per optimizer step, learning rate 1e-5.
 - *Compute:* RL GPU time = wall-clock of self-play + updates (both occupy the GPU).
 - *Logged per round* (scratch `rl_log.csv`): W/D/L, plies, losses, KL, policy entropy (the collapse check), self-play vs. update seconds.
+*Runs and budget (Oct 17):* up to 3 configs, 1 seed each: run 1 = the defaults above, runs 2-3 = changes chosen from run 1's results. Each run gets 10 RL GPU-hours as a ceiling, not a target (`max_gpu_hours_per_arm` = 17.7, since the cap counts total training hours, SFT's 7.69 included): stop early on a plateau or collapse, extend (resume) if Elo is still rising at the cap. Question: does RL from the SFT model raise Elo above the SFT plateau (~690), and at what compute? Hypotheses: H1 Elo rises beyond the CI; H0 flat (outcome-only reward from 64 games/round may be too weak a signal); H2 degrades (entropy crash, KL growth; a config problem, not a result). Eval: after each run, up to 4 kept checkpoints (evenly spaced, incl. the last), same opponents and games as the SFT evals; `rl_log.csv` is the health check during the run. Stop rules and the rerun policy are set after run 1, from its data.
 *Gate:* stable training (no collapse: entropy doesn't crash, KL stays bounded), and Elo is flat or rising across evaluated checkpoints.
 
 **Step 8 — LLM Phase 1: 2x2 sweep** — *deferred (Oct 17).*
@@ -243,4 +244,4 @@ Structured + masked under pure self-play RL, SFT only, and SFT + RL, 1 seed each
 ## 5. Next alignment points
 1. ~~Self-play RL design details (round size, KL weight, baseline)~~ — provisional defaults set Oct 17 (Step 7); revisit after the test run.
 2. LLM + MCTS arm design: MCTS only at play time vs. inside the self-play training loop (the earlier lean was the latter, for comparability with AlphaZero), simulations per move, and how its compute is counted.
-3. `max_gpu_hours_per_arm`, and a plateau rule (when a run counts as done).
+3. ~~`max_gpu_hours_per_arm`~~ set Oct 17 for Step 7 (17.7 total = 10 RL GPU-h per run, up to 3 configs). Still open: the plateau/collapse stop rules and the rerun policy (after run 1), and the cap for pure RL (Step 10) and the other arms.

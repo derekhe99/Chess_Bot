@@ -8,11 +8,12 @@ gpu_type: L4                   # every reported run; results.csv logs the actual
 
 # Hourly prices that turn hours into dollars in the analysis notebook.
 # Pin in Step 6: RunPod on-demand L4 price, plus a CPU price for Stockfish labeling time.
-gpu_usd_per_hour: 0.59         # TODO Step 6 -- RunPod on 10/11/2026
+gpu_usd_per_hour: 0.59         # RunPod on-demand L4, EU-RO-1, checked 2026-10-17
 cpu_usd_per_hour: null         # TODO Step 6 -- source + date in the comment
 
 # Stockfish labeling time charged to every SFT-using arm (data/processed/.../manifest.json).
 label_cpu_hours: 0.99
 
-# Loose safety cap on training GPU-hours per arm (not an equal budget). Set in Step 7.
-max_gpu_hours_per_arm: null
+# Safety cap on TOTAL training GPU-hours per run (init + RL), a ceiling, not an equal budget.
+# Step 7 (SFT + RL): 7.69 SFT + 10 RL = 17.7. Pure RL (Step 10, init 0) will need its own value.
+max_gpu_hours_per_arm: 17.7
