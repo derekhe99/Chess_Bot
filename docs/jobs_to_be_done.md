@@ -1,6 +1,6 @@
 # Chess AI — Jobs to Be Done (Steps 0–11)
 
-Oct 10, 2026 · @Derek · regenerated from `implementation_plan_v4.md`
+Oct 17, 2026 · @Derek · regenerated from `implementation_plan_v4.md` (Oct 17 update: focus on structured + masked; 2×2 deferred; LLM + MCTS planned)
 
 ## What this view is
 
@@ -8,7 +8,7 @@ Oct 10, 2026 · @Derek · regenerated from `implementation_plan_v4.md`
 
 Status: 🟢 core, load-bearing work for that step's milestone · 🟡 breadth or optional, layered on a working 🟢 result. Steps 0–5 are done.
 
-**What the project reports at the end (Step 11):** Elo ± CI per arm; Elo vs. training compute (GPU-hours and dollars), which also shows sample efficiency; dollars to train and inference dollars per game; and the illegal-move rate of the unmasked arms. All of it is read from one file, `results/results.csv`.
+**What the project reports at the end (Step 11):** Elo ± CI per arm; Elo vs. training compute (GPU-hours and dollars), which also shows sample efficiency; and dollars to train and inference dollars per game (plus the illegal-move rate of unmasked arms, if the deferred 2×2 returns). All of it is read from one file, `results/results.csv`.
 
 ## Step 0 — Setup ✅
 
@@ -96,13 +96,12 @@ Status: 🟢 core, load-bearing work for that step's milestone · 🟡 breadth o
 
 **Jobs to be done:**
 
-- **Play the model against itself:** Run many self-play games at once and record each game's positions, moves, and result. Shared with AlphaZero. *(self-play runner)* — `search/selfplay.py` — 🟢
+- **Play the model against itself:** Play self-play games from random short openings, sampling each move from the model's own move probabilities so games differ, and record each game's positions, moves, and result. Shared with AlphaZero; games run one at a time for now. *(self-play runner)* — `search/selfplay.py` — 🟢
 - **Learn from wins and losses:** Give every move in a game that game's result as its reward, and update the model toward moves from won games, with a baseline to cut noise and a pull back toward the starting model so it doesn't drift too fast. *(policy gradient + value baseline + KL penalty)* — `train/llm_rl.py` — 🟢
 - **Start from the SFT model and check Elo rises:** Warm-start RL from the SFT checkpoint, evaluate 3–4 checkpoints into `results.csv`, and confirm Elo is flat or rising. *(warm-start)* — `train/llm_rl.py`, `04_train_llm_rl.ipynb` — 🟢
-- **Track illegal moves over training:** For unmasked arms, log per round how often the model tries an illegal move, since whether self-play cures this is itself a finding. — `train/llm_rl.py` — 🟢
-- **Set a loose safety cap on training time:** Once RL speed is known, set the most GPU-hours any arm may use, so no single run eats the project. — `configs/base.yaml` — 🟢
+- **Count the compute and watch for collapse:** Log per round the results, losses, drift from the SFT model, and how spread out the model's move choices are, plus the GPU time of self-play and updates, so a collapsing run is caught early and every checkpoint has its GPU-hours. *(KL, policy entropy)* — `train/llm_rl.py` — 🟢
 
-## Step 8 — LLM Phase 1: 2×2 sweep
+## Step 8 — LLM Phase 1: 2×2 sweep (deferred, Oct 17)
 
 **Big picture:** find which combination of move masking and board representation hill-climbs Elo best per unit of compute.
 
@@ -126,13 +125,23 @@ Status: 🟢 core, load-bearing work for that step's milestone · 🟡 breadth o
 - **Test that flipping is reversible:** Flipping twice returns the original, and flipped legal moves still match python-chess. — `tests/test_engine.py` — 🟢
 - **Train by self-play and put it on the chart:** Self-play training to plateau or the cap, 1 seed, with 3–4 checkpoints evaluated into `results.csv`. — `train/az_train.py`, `search/selfplay.py` — 🟢
 
-## Step 10 — LLM Phase 2: regime comparison
+## LLM + MCTS arm (planned, Oct 17; after Step 9)
 
-**Big picture:** with the best LLM combo fixed, find out how much each training regime (imitation, self-play, or both) buys per unit of compute.
+**Big picture:** test whether a search scaffold makes the LLM much stronger, by putting the structured + masked LLM inside the same tree search AlphaZero uses.
 
 **Jobs to be done:**
 
-- **Train the best combo three ways:** Pure self-play RL, SFT only, and SFT + RL, each to plateau or the cap, 1 seed. — `train/sft.py`, `train/llm_rl.py` — 🟢
+- **Align the design first:** Search only at play time vs. inside the self-play training loop, simulations per move, and how its compute is counted. — plan Sec 5 — 🟢
+- **Reuse the AlphaZero search:** Drive `search/mcts.py` with the LLM's move scores as the prior and its value head as the leaf estimate. — `search/mcts.py` — 🟢
+- **Put it on the chart:** 3–4 checkpoints evaluated into `results.csv`. — `eval/match.py` — 🟢
+
+## Step 10 — LLM Phase 2: regime comparison
+
+**Big picture:** on structured + masked, find out how much each training regime (imitation, self-play, or both) buys per unit of compute.
+
+**Jobs to be done:**
+
+- **Train structured + masked three ways:** Pure self-play RL, SFT only, and SFT + RL, each to plateau or the cap, 1 seed. SFT only (Step 5) and SFT + RL (Step 7) already exist, so only pure self-play RL is new. — `train/sft.py`, `train/llm_rl.py` — 🟢
 - **Put every regime on the same chart:** Evaluate 3–4 checkpoints per run into `results.csv`. — `eval/match.py` — 🟢
 
 ## Step 11 — Final analysis
@@ -144,5 +153,5 @@ Status: 🟢 core, load-bearing work for that step's milestone · 🟡 breadth o
 - **Compare final strength:** Bar chart of the best checkpoint's Elo ± CI per arm. — `06_analysis.ipynb` — 🟢
 - **Compare learning per unit of compute:** Elo vs. training GPU-hours (and dollars) curves per arm, which show sample efficiency. *(Elo-vs-compute)* — `06_analysis.ipynb` — 🟢
 - **Compare dollars:** Training dollars (GPU + labeling CPU) and inference dollars per game (sec/move × moves/game × rate) per arm. — `06_analysis.ipynb` — 🟢
-- **Show whether self-play cures illegal moves:** Illegal-move rate for the unmasked arms. — `06_analysis.ipynb` — 🟢
+- **Show whether self-play cures illegal moves:** Illegal-move rate for the unmasked arms, only if the deferred 2×2 returns. — `06_analysis.ipynb` — 🟡
 - **Tighten the headline numbers:** Play more games for the arms on the final slides. — `eval/match.py` — 🟡

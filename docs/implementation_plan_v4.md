@@ -13,6 +13,12 @@
 5. **Cut:** the per-move inference cap and the inference benchmark, the market-rate price table, `utils/budget.py`, `utils/logging.py`, `utils/checkpoint.py`, `utils/config.py`, FLOPs and token counting, W&B, Stockfish wall-clock logging, the optional AlphaZero rung, and the provisional/frozen status mechanism. Seconds per move now come from the eval games themselves. Dollars are hours × one hourly rate, computed in the analysis notebook.
 6. **Compute moves to RunPod** (Sec 1–2) for Step 6 onward: an on-demand L4 pod, a network volume for artifacts, and headless notebooks. Colab and Drive served Steps 0–5.
 
+**Update, Oct 17, 2026 (edited in place, still v4):**
+7. **Focus on structured + masked.** The LLM work concentrates on one configuration (structured text, masking on) and on the questions that matter most: SFT vs. self-play RL, and LLM + MCTS as a scaffold. The 2x2 sweep (Step 8) is **deferred**, not cut. The unmasked and FEN code paths stay in the repo.
+8. **LLM + MCTS is promoted** from optional stretch to a planned arm, after AlphaZero (it reuses `search/mcts.py`). Its design is an alignment point (Sec 5).
+9. **Step 7 no longer logs illegal moves** (a masked model can't make one) **and no longer sets the safety cap**; `max_gpu_hours_per_arm` is decided later.
+10. **Step 7's RL design** is set as provisional defaults in `configs/llm_rl.yaml` (see Step 7), to revisit after the test run.
+
 ---
 
 ## 0. Locked assumptions
@@ -25,17 +31,17 @@ These decisions are made. Everything below depends on them.
 | Legal-move toggle | **Hard masking / constrained decoding** (on) vs. free generation (off). Listing legal moves in the prompt is *not* the toggle. |
 | Illegal moves | **Three consecutive illegal attempts on the same move forfeit the game** (termination `illegal_move`), in eval and in self-play. Masked agents can't trigger it. |
 | Board representation toggle | FEN text vs. structured text (piece-per-square tokens). No image input. |
-| LLM design | Phase 1: 2x2 (mask × representation), all SFT warm-start + RL. Phase 2: the best combo under 3 regimes (self-play RL only / SFT only / SFT + RL). Unmasked arms self-play unmasked, so their illegal-move rate over RL is an observed outcome. |
+| LLM design | **Current focus (Oct 17): structured text + masking on.** On that config: 3 regimes (SFT only / SFT + RL / self-play RL only), then LLM + MCTS. The 2x2 (mask × representation, Phase 1) is deferred; if it returns, unmasked arms self-play unmasked, so their illegal-move rate over RL is an observed outcome. |
 | AlphaZero | Small CNN policy-value net + MCTS, pure self-play. |
 | Board orientation | LLM arms never flip (absolute FEN/UCI). AlphaZero flips to the side to move (board mirrored + colors swapped when Black moves), added as a thin layer in Step 9. |
 | Terminology | **Game** = one full game. **Round** = a batch of self-play games followed by one training update. SFT has no rounds. |
 | Eval | **Frozen reference set, complete as of Step 5:** `sf_1320` = 1320 (the pin), `sf_1500`, `sf_1700`, `random`, `greedy`, `step_20000`. Each new model is rated against it and only its own rating is fitted. Stockfish members play at 0.1 s per move. **New models:** 20 games against each of the 2–3 reference opponents nearest its expected strength, in batches of 10; after each batch the model's row in `results.csv` is overwritten with the latest Elo + 95% CI. There is no CI target: report what you get, and add +20 games by hand only if a CI is wider than ±200. A model may later be frozen as a new rung (role `model` → `reference`) only if CIs in the 719–1320 gap turn out unusable. |
 | Source of truth | **One CSV, `results/results.csv`** on the artifact volume. One row per player, with `role` = `pin` / `reference` / `model`. The eval code reads the pin + reference rows as fixed opponents; `model` rows are what gets plotted. Each run's own folder keeps scratch logs (`train_log.csv`, `val_log.csv`) for loss curves; nothing else reads them. |
-| Compute accounting | **No equal budgets.** Each arm trains until Elo plateaus or it hits a loose safety cap (`max_gpu_hours_per_arm` in `base.yaml`, set in Step 7 once RL speed is known). Fairness comes from **Elo vs. training GPU-hours curves**: 3–4 checkpoints per run are evaluated, and each row carries the cumulative training GPU-hours at that checkpoint (an in-code timer). Stockfish labeling CPU-hours (0.99 h for the 50k dataset) are charged to every SFT-using arm. **Dollars** = GPU-hours × `gpu_usd_per_hour` + CPU-hours × `cpu_usd_per_hour` (RunPod on-demand prices, source + date, in `base.yaml`), computed in the analysis notebook. **Inference cost** = seconds per move measured in the eval games × the same rate. There is no per-move inference cap; AlphaZero's MCTS simulations per move is a config value and shows up in its sec/move. |
+| Compute accounting | **No equal budgets.** Each arm trains until Elo plateaus or it hits a loose safety cap (`max_gpu_hours_per_arm` in `base.yaml`; the value is decided later, once RL speed is known; `null` = no cap). Fairness comes from **Elo vs. training GPU-hours curves**: 3–4 checkpoints per run are evaluated, and each row carries the cumulative training GPU-hours at that checkpoint (an in-code timer). Stockfish labeling CPU-hours (0.99 h for the 50k dataset) are charged to every SFT-using arm. **Dollars** = GPU-hours × `gpu_usd_per_hour` + CPU-hours × `cpu_usd_per_hour` (RunPod on-demand prices, source + date, in `base.yaml`), computed in the analysis notebook. **Inference cost** = seconds per move measured in the eval games × the same rate. There is no per-move inference cap; AlphaZero's MCTS simulations per move is a config value and shows up in its sec/move. |
 | Rigor | **1 seed per arm.** Seeds can be added later for the final comparison if time allows. |
 | Sequencing | SFT-on-Stockfish baseline end to end first (done, Step 5). |
 
-**Still open:** the exact structured-text format is settled in code (Step 4). `max_gpu_hours_per_arm` is set in Step 7.
+**Still open:** the exact structured-text format is settled in code (Step 4). `max_gpu_hours_per_arm` (decided later). Step 7's RL hyperparameters are provisional defaults until the test run.
 
 ---
 
@@ -113,11 +119,11 @@ There is no `utils/` folder (cut in v4). Checkpoint/resume logic lives in each `
 
 **`search/`**
 - **`mcts.py`** — PUCT MCTS over any `(policy, value) = evaluate(positions)` model, with batched leaf evaluation.
-- **`selfplay.py`** — Concurrent self-play games recording (position, move or search policy, outcome). Used by LLM RL and AlphaZero.
+- **`selfplay.py`** — Self-play games through a pluggable move picker, recording (position, move or search policy, outcome). Used by LLM RL and AlphaZero. Games run one at a time for now; batching moves across games is the first speedup if self-play time dominates.
 
 **`train/`**
 - **`sft.py`** — SFT on Stockfish labels (move cross-entropy + value loss), resumable. Writes `train_log.csv` / `val_log.csv` (scratch, per run), including the cumulative `gpu_seconds_train` the results row needs.
-- **`llm_rl.py`** — Self-play policy-gradient RL (game result as reward, a value baseline, a KL penalty toward the start model), from the base model or an SFT checkpoint, resumable. Its per-round log in the run folder includes the illegal-move rate (unmasked arms) and cumulative training GPU-seconds.
+- **`llm_rl.py`** — Self-play policy-gradient RL (game result as reward, a value baseline, a KL penalty toward the start model), from the base model or an SFT checkpoint, resumable. Its per-round log (`rl_log.csv`, scratch) holds game results, losses, KL, policy entropy, and cumulative training GPU-seconds.
 - **`az_train.py`** — AlphaZero loop: self-play round → replay buffer → updates → checkpoint, resumable, with the same cumulative GPU-seconds counter.
 
 **`eval/`**
@@ -202,29 +208,38 @@ Structured text + masking on, trained on the full 44,982-position train split, s
 5. Smoke test on the pod: `00_setup` passes; evaluate 3–4 SFT checkpoints (`02_train_sft`'s eval section) into `results.csv`; time a 20-game match.
 *Gate:* `results.csv` on the volume holds the pin, 5 reference rows, and the SFT checkpoints with Elo, CI, train GPU-hours, and sec/move, all produced on the pod.
 
-**Step 7 — LLM self-play RL** (`search/selfplay.py`, `train/llm_rl.py`, `04_train_llm_rl.ipynb`)
-Warm-start from the SFT checkpoint (structured + masked). Play rounds of self-play, update, and checkpoint each round. Log the illegal-move rate and cumulative GPU-seconds per round in the run folder. Evaluate 3–4 checkpoints into `results.csv`. Set `max_gpu_hours_per_arm` from the observed RL speed. Risk to watch: an unmasked arm without SFT may forfeit most early games and stall.
-*Gate:* stable training (no collapse), and Elo is flat or rising across evaluated checkpoints.
+**Step 7 — LLM self-play RL** (`search/selfplay.py`, `train/llm_rl.py`, `configs/llm_rl.yaml`, `04_train_llm_rl.ipynb`)
+Warm-start from the SFT checkpoint (structured + masked, run `structured_masked_nall_e10_s0`, step 25,000). Each round: play self-play games, make one update pass, save resume state; keep a checkpoint every few rounds. Evaluate 3–4 checkpoints into `results.csv`; each row's training GPU-hours = SFT's 7.69 h + the RL hours so far.
+RL design (provisional defaults in `configs/llm_rl.yaml`; revisit after the test run):
+- *Self-play:* 64 games per round, each from a 4-ply random opening. Moves are sampled from the masked distribution (softmax over the legal moves' scores, temperature 1.0) so games differ and the model explores. Draw at 300 plies.
+- *Reward:* every move gets its game's result from the mover's side, as a score (win 1, draw 0.5, loss 0).
+- *Baseline:* the value head's own prediction at that position, when the move was played. Advantage = score − prediction.
+- *Loss:* policy gradient (−advantage × log P(move)) + KL penalty toward the SFT model on the played move (weight 0.1) + value loss (BCE vs. the score, weight 1.0). One pass over the round's positions, 256 positions per optimizer step, learning rate 1e-5.
+- *Compute:* RL GPU time = wall-clock of self-play + updates (both occupy the GPU).
+- *Logged per round* (scratch `rl_log.csv`): W/D/L, plies, losses, KL, policy entropy (the collapse check), self-play vs. update seconds.
+*Gate:* stable training (no collapse: entropy doesn't crash, KL stays bounded), and Elo is flat or rising across evaluated checkpoints.
 
-**Step 8 — LLM Phase 1: 2x2 sweep**
+**Step 8 — LLM Phase 1: 2x2 sweep** — *deferred (Oct 17).*
 All 4 combos (mask × representation) under SFT + RL, 1 seed each, each trained to plateau or the cap. The 3 new combos need their own SFT run first. Evaluate 3–4 checkpoints per run. Pick the best combo from the Elo-vs-compute curves.
 
 **Step 9 — AlphaZero arm** (`model/az_net.py`, `search/mcts.py`, `train/az_train.py`, `05_train_alphazero.ipynb`)
 Start with `tests/test_mcts.py` (mate-in-1). Add side-to-move flipping: `board.mirror()` before `to_planes`, a fixed 1,968-entry move mirror table, and stored search policies flipped the same way, plus a test that flipping twice round-trips and that flipped masks match python-chess. Then train by pure self-play, 1 seed, to plateau or the cap, and evaluate 3–4 checkpoints. This is independent of Steps 7–8, so it can run on a separate pod.
 
 **Step 10 — LLM Phase 2: regime comparison**
-The best combo under pure self-play RL, SFT only, and SFT + RL, 1 seed each, to plateau or the cap, with 3–4 checkpoints evaluated per run.
+Structured + masked under pure self-play RL, SFT only, and SFT + RL, 1 seed each, to plateau or the cap, with 3–4 checkpoints evaluated per run. SFT only (Step 5) and SFT + RL (Step 7) already exist for this config, so the new run is pure self-play RL from the untrained model.
 
 **Step 11 — Final analysis** (`06_analysis.ipynb`, reads only `results.csv`)
 - Elo ± CI bar chart, one bar per arm (best checkpoint).
 - Elo vs. training GPU-hours (and dollars) curves per arm: sample efficiency.
 - Dollars to train (GPU + labeling CPU) and inference dollars per game (sec/move × moves/game × rate) per arm.
-- Illegal-move rate for the unmasked arms.
+- Illegal-move rate for the unmasked arms (only if the 2x2 returns).
 - Optional: rescale by playing more games for the arms on the final slides.
 
-**Optional stretch:** an LLM + MCTS arm, reusing `search/mcts.py` with the LLM's policy and value heads.
+**LLM + MCTS arm** (planned, Oct 17; after Step 9, before Step 11): the structured + masked LLM with MCTS, reusing `search/mcts.py` with the LLM's policy and value heads. Design is aligned before building (Sec 5).
 
 ---
 
 ## 5. Next alignment points
-1. Self-play RL design details (round size, KL weight, baseline), at the start of Step 7.
+1. ~~Self-play RL design details (round size, KL weight, baseline)~~ — provisional defaults set Oct 17 (Step 7); revisit after the test run.
+2. LLM + MCTS arm design: MCTS only at play time vs. inside the self-play training loop (the earlier lean was the latter, for comparability with AlphaZero), simulations per move, and how its compute is counted.
+3. `max_gpu_hours_per_arm`, and a plateau rule (when a run counts as done).

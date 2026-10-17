@@ -70,6 +70,13 @@ Rules:
     `model_ratings.csv` / `experiments.csv` on Drive are retired, not migrated.
   - Next: RunPod volume + pod, migrate artifacts from Drive, pin hourly rates in
     `base.yaml`, evaluate 3–4 SFT checkpoints into `results.csv` on the pod (Step 6 gate).
+- Focus (Oct 17, plan v4 update): structured + masked only. SFT vs. self-play RL, then LLM +
+  MCTS (planned after AlphaZero). The 2x2 sweep (Step 8) is deferred; `max_gpu_hours_per_arm`
+  is decided later.
+- Step 7 — code written Oct 17 (branch `step-7-llm-rl`): `search/selfplay.py` (pluggable
+  move picker, one game at a time), `train/llm_rl.py` (REINFORCE, value-head baseline, KL to
+  the SFT model, resumable, `rl_log.csv`), `configs/llm_rl.yaml` (provisional defaults),
+  `04_train_llm_rl.ipynb`. Warm-starts from SFT step 25,000. Test run on the pod pending.
 
 ## How code runs (one source of truth per thing)
 

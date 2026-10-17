@@ -1,2 +1,27 @@
-# LLM self-play RL hyperparameters.
-# TODO: fill in during Step 7.
+# Step 7 -- LLM self-play RL (train/llm_rl.py -> RLConfig).
+# PROVISIONAL defaults (plan v4, Oct 17 update): revisit after the first test run.
+# The player's settings (LoRA shape, prompt, representation, masking) come from the SFT
+# checkpoint's own policy_config.json, so they always match what SFT trained.
+
+init_run: structured_masked_nall_e10_s0   # SFT run to warm-start from (null = base model, pure RL -- Step 10)
+init_step: 25000                          # its checkpoint step (7.69 GPU-h on the curve)
+
+# Self-play (one round = these games, then one update pass)
+rounds: 100              # upper bound; stop by hand once Elo plateaus (eval 3-4 kept checkpoints)
+games_per_round: 64
+opening_plies: 4         # random opening half-moves per game, for variety (not trained on)
+temperature: 1.0         # sample moves from softmax(legal-move scores / temperature); 1.0 = the model's own odds
+max_plies: 300           # longer games are adjudicated draws
+
+# Update (reward = game result from the mover's side: win 1, draw 0.5, loss 0)
+step_positions: 256      # positions per optimizer step (gradient accumulation over micro-batches)
+micro_batch: 16          # positions per forward/backward; SFT's batch 16 used ~16.5 of 24 GB on the L4
+learning_rate: 1.0e-5    # 10x below SFT's: RL gradients are noisy
+weight_decay: 0.0
+grad_clip: 1.0
+kl_coef: 0.1             # pull toward the SFT model (KL on the played move)
+value_loss: bce          # value head vs the game's score (bce | mse); it is also the advantage baseline
+value_loss_weight: 1.0
+
+checkpoint_every: 5      # rounds between kept checkpoints (the latest round is always kept for resume)
+seed: 0
