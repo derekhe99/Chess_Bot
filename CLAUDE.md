@@ -56,7 +56,10 @@ Rules:
   stopped at step 25,000 = 7.69 GPU-h (run `structured_masked_nall_e10_s0`). Frozen
   reference set: `sf_1320` = 1320 (pin), `sf_1500` = 1580, `sf_1700` = 1731, `random` =
   525, `greedy` = 641, `step_20000` = 719 (CIs ~±80-125). Gate met.
-- Step 6 — in progress: move to RunPod + the single results file.
+- Step 6 — done (Oct 17): move to RunPod + the single results file. Gate met: `results.csv`
+  has 10 rows (pin, 5 references, 4 SFT checkpoints on an L4 pod). Elo (CI), 60 games each:
+  5k = 655 (621–689), 10k = 689 (655–722), 15k = 706 (664–748), 25k = 681 (638–714);
+  train GPU-h 1.54 / 3.08 / 4.61 / 7.69; ~0.09 s/move; illegal rate 0.
   - Code done (Oct 10, plan v4): `eval.anchors.ResultsTable` over
     `results/results.csv` (role = pin / reference / model) replaces `FrozenRegistry`,
     `reference_set.csv`, `model_ratings.csv`, `experiments.csv`;
@@ -65,9 +68,11 @@ Rules:
     provisional/frozen status. Notebook setup cells read `artifact_root` from
     `configs/base.yaml` (no Drive mount).
   - Oct 17: the first pod had no network volume, so it was terminated at $0 balance and its
-    data (checkpoints, `results.csv`) was lost. Local copies of the SFT checkpoints exist.
-  - Next: create volume, deploy pod on it, re-upload local artifacts, pin hourly rates in
-    `base.yaml`, evaluate 3–4 SFT checkpoints into `results.csv` on the pod (Step 6 gate).
+    data was lost. Rebuilt from the Drive copies: network volume `chess-ai` (EU-RO-1, 30 GB)
+    mounted at `/workspace`; budget-cap watchdog in `docs/runpod_runbook.md`.
+  - Still open: fill `gpu_usd_per_hour` in `configs/base.yaml` (source + date). Back up
+    `results.csv` to the laptop after every run.
+  - Next: Step 7 (RL). Merge `main` into the Step 7 branch first (plan Sec 4 prerequisites).
 
 ## How code runs (one source of truth per thing)
 
