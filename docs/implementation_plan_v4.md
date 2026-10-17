@@ -50,8 +50,15 @@ These decisions are made. Everything below depends on them.
 
 **Rules:**
 - **Artifacts live on a RunPod network volume** mounted at `/workspace`: `artifact_root = /workspace/chess-ai` (`data/processed`, `checkpoints/`, `results/`). The volume outlives the pod. Copy `results/results.csv` to the laptop now and then as a backup.
-- **Code lives in GitHub only.** Clone once onto the volume (`/workspace/Chess_Bot`). At the start of each session: `git fetch && git checkout <branch> && git reset --hard origin/<branch>`. Code is never edited on the pod, so the reset never loses anything.
-- **Long jobs run as headless notebooks** inside `tmux`: `jupyter nbconvert --to notebook --execute notebooks/XX.ipynb --output-dir /workspace/chess-ai/logs --ExecutePreprocessor.timeout=-1`, so closing the browser or laptop doesn't stop them. The executed copy (with its outputs) goes to the volume, not the repo, so the repo stays clean. End long jobs with `runpodctl stop pod $RUNPOD_POD_ID`, because an idle pod still bills.
+- **Code lives in GitHub only.** Clone once onto the volume (`/workspace/Chess_Bot`), then `git pull` at the start of each session. Code is never edited on the pod.
+- **A pod must always have the network volume attached.** Create the volume first (Storage page), then deploy the pod from it, in the same datacenter. A pod without a volume is terminated, with its data lost, when the balance hits $0 (this happened once). Check the Storage page after any long idle spell.
+- **Long jobs run as headless notebooks** inside `tmux`, with a budget cap so the balance never reaches $0. Set `BAL` (balance now), `FLOOR` (never go below, ~$2, enough for storage) and `RATE` (the L4 $/hr), then:
+  ```
+  HOURS=$(python -c "print(round(($BAL-$FLOOR)/$RATE*0.9, 2))")
+  timeout ${HOURS}h jupyter nbconvert --to notebook --execute notebooks/XX.ipynb --output-dir /workspace/chess-ai/logs --ExecutePreprocessor.timeout=-1
+  runpodctl stop pod $RUNPOD_POD_ID
+  ```
+  Closing the browser or laptop doesn't stop it, the `timeout` ends the job at the floor, and the stop line always runs, since an idle pod still bills. RunPod has no API we rely on for the balance, so `BAL` is typed by hand at launch. Turn on the low-balance email alert (no auto-pay).
 - **Secrets** (`HF_TOKEN`, a GitHub token if the repo is private) are RunPod environment variables.
 - Log the GPU name in every results row. Discard or flag any reported run that isn't on an L4.
 - Every training script is resumable (checkpoint every N steps / every round to the volume).

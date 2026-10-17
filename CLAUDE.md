@@ -64,23 +64,19 @@ Rules:
     `utils/` entirely, `games_from_counts`, `append_rating_log`, `screen_checkpoints`, the
     provisional/frozen status. Notebook setup cells read `artifact_root` from
     `configs/base.yaml` (no Drive mount).
-  - `results/results.csv` (gitignored) was built locally from the old `reference_set.csv`
-    (pin + 5 reference rows; `step_20000`'s spec has run/step but no weights hash -- the
-    local CSV never had one). Upload it to `/workspace/chess-ai/results/`.
-    `model_ratings.csv` / `experiments.csv` on Drive are retired, not migrated.
-  - Next: RunPod volume + pod, migrate artifacts from Drive, pin hourly rates in
+  - Oct 17: the first pod had no network volume, so it was terminated at $0 balance and its
+    data (checkpoints, `results.csv`) was lost. Local copies of the SFT checkpoints exist.
+  - Next: create volume, deploy pod on it, re-upload local artifacts, pin hourly rates in
     `base.yaml`, evaluate 3–4 SFT checkpoints into `results.csv` on the pod (Step 6 gate).
 
 ## How code runs (one source of truth per thing)
 
 1. **Local (Windows, VS Code)** — where code is written. Repo `github.com/derekhe99/Chess_Bot`.
 2. **RunPod** (Step 6 onward; Steps 0–5 ran on Colab) — where it executes. On-demand L4
-   pod with a network volume at `/workspace`. Repo cloned once to `/workspace/Chess_Bot`;
-   each session `git fetch && git checkout <branch> && git reset --hard origin/<branch>`
-   (code is never edited on the pod). Long jobs run headless in tmux:
-   `jupyter nbconvert --to notebook --execute notebooks/XX.ipynb --output-dir /workspace/chess-ai/logs --ExecutePreprocessor.timeout=-1`
-   (executed copy goes to the volume, repo stays clean); end them with
-   `runpodctl stop pod $RUNPOD_POD_ID`. `HF_TOKEN` is a pod environment variable.
+   pod with a network volume at `/workspace`. Repo cloned once to `/workspace/Chess_Bot`,
+   `git pull` each session; code is never edited on the pod. Long jobs run headless in
+   tmux with a budget cap (`timeout` + `runpodctl stop pod $RUNPOD_POD_ID`, plan Sec 1).
+   Always attach the network volume to the pod. `HF_TOKEN` is a pod environment variable.
 3. **Artifacts** — `artifact_root` in `configs/base.yaml` (`/workspace/chess-ai`):
    `data/processed`, `checkpoints/{sft,llm_rl,alphazero}`, `results/results.csv`.
    Artifacts never go to git (`.gitignore` covers `results/`, checkpoints, `*.pt`,
@@ -108,7 +104,5 @@ Rules:
 - **Stockfish is pinned to 19** (`SF_VERSION = "sf_19"` in `engine/stockfish.py`;
   `ensure_stockfish()` asserts the version). Every rating in `results.csv` depends on the
   exact engine; never upgrade it without discussing it first.
-- **No `torchao` in requirements.** It was pinned for Colab (whose preinstalled copy broke
-  peft's LoRA). On RunPod it isn't preinstalled, and the latest torchao needs a newer torch
-  than the pod image has; if it's installed at all, `transformers` imports it and model
-  loading crashes (`cannot import name 'ScalingType'`). Fix on a pod: `pip uninstall -y torchao`.
+- `torchao>=0.16.0` is pinned because Colab's preinstalled version broke peft's LoRA
+  dispatch; harmless elsewhere.
