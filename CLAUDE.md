@@ -67,8 +67,14 @@ Rules:
 - Step 7 — code written Oct 17 (branch `step-7-llm-rl`): `search/selfplay.py` (pluggable
   move picker, one game at a time), `train/llm_rl.py` (REINFORCE, value-head baseline, KL to
   the SFT model, resumable, `rl_log.csv`), `configs/llm_rl.yaml` (provisional defaults),
-  `04_train_llm_rl.ipynb`. Warm-starts from SFT step 25,000. Step 6 merged in. Test run on
-  the pod pending.
+  `04_train_llm_rl.ipynb`. Warm-starts from SFT step 25,000. Step 6 merged in.
+  - Run 1 (Oct 18, defaults): 20 rounds, 10.47 RL GPU-h (18.16 total), stopped by the cap.
+    Healthy (entropy ~1.9, KL ~0.04) but flat: r5 647, r10 714, r15 681, r20 689 vs. SFT 25k
+    681 (H0). ~67% draws and a value head at chance, so little signal. Gate met (stable, flat).
+  - Run 2 (Oct 18, plan Step 7): Stockfish scores non-checkmate endings (repetition, 50-move,
+    cap), nothing else changed; `tag: sfend`. Added: run-name `tag`, game-ending counts in
+    `rl_log.csv`, `eval/plots.py` (Elo vs. compute, saved by notebooks 02 and 04).
+  - Not merged to `main` yet (Derek's call). No stop rules for now; reruns decided per run.
 
 ## How code runs (one source of truth per thing)
 
@@ -76,7 +82,8 @@ Rules:
 2. **RunPod** (Step 6 onward; Steps 0–5 ran on Colab) — where it executes. On-demand L4
    pod with a network volume at `/workspace`. Repo cloned once to `/workspace/Chess_Bot`,
    `git pull` each session; code is never edited on the pod. Long jobs run headless in
-   tmux with a budget cap (`timeout` + `runpodctl stop pod $RUNPOD_POD_ID`, plan Sec 1).
+   tmux with a budget-cap watchdog (a background timer that runs
+   `runpodctl stop pod $RUNPOD_POD_ID`; `docs/runpod_runbook.md`, plan Sec 1).
    Always attach the network volume to the pod. `HF_TOKEN` is a pod environment variable.
 3. **Artifacts** — `artifact_root` in `configs/base.yaml` (`/workspace/chess-ai`):
    `data/processed`, `checkpoints/{sft,llm_rl,alphazero}`, `results/results.csv`.

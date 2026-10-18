@@ -56,6 +56,7 @@ class SelfPlayGame:
     white_score: float             # 1 White won, 0.5 draw, 0 Black won
     termination: str               # "checkmate", "threefold_repetition", "max_plies", ...
     plies: int                     # total half-moves, opening included
+    final_fen: str = ""            # the position the game ended in (what Stockfish end scoring judges)
 
     def score_for(self, white: bool) -> float:
         """The result from one side's point of view: 1 win, 0.5 draw, 0 loss."""
@@ -85,7 +86,7 @@ def play_selfplay_game(pick: MovePicker, *, opening: list[str] | None = None,
         white_score, termination = 0.5, "max_plies"
     else:
         white_score, termination = (result.white_value + 1) / 2, result.termination
-    return SelfPlayGame(records, opening, white_score, termination, board.ply())
+    return SelfPlayGame(records, opening, white_score, termination, board.ply(), board.fen())
 
 
 def play_selfplay_games(pick: MovePicker, n_games: int, *, opening_plies: int = 4, max_plies: int = 300,

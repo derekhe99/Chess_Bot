@@ -11,7 +11,7 @@ rounds: 100              # upper bound; stop by hand once Elo plateaus (eval 3-4
 games_per_round: 64
 opening_plies: 4         # random opening half-moves per game, for variety (not trained on)
 temperature: 1.0         # sample moves from softmax(legal-move scores / temperature); 1.0 = the model's own odds
-max_plies: 300           # longer games are adjudicated draws
+max_plies: 300           # longer games stop here (scored per end_scoring below)
 
 # Update (reward = game result from the mover's side: win 1, draw 0.5, loss 0)
 step_positions: 256      # positions per optimizer step (gradient accumulation over micro-batches)
@@ -25,3 +25,11 @@ value_loss_weight: 1.0
 
 checkpoint_every: 5      # rounds between kept checkpoints (the latest round is always kept for resume)
 seed: 0
+
+# End-of-game scoring (plan Step 7, Oct 18). Run 1 used `result` (win 1 / draw 0.5 / loss 0).
+# Run 2 = `stockfish`, the only change from run 1: a game that ends by repetition, the 50-move rule,
+# or the ply cap gets Stockfish's win probability for its final position instead of 0.5.
+# Checkmate, stalemate, and insufficient material keep their exact result.
+end_scoring: stockfish
+end_scoring_nodes: 100000   # Stockfish search per final position (fixed nodes = reproducible), ~0.1 s on 1 CPU core
+tag: sfend               # appended to the run folder name; give every new config its own tag

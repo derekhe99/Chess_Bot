@@ -6,8 +6,13 @@ own games. Each ROUND (plan Sec 0 terminology):
      itself (search/selfplay.py). Each move is SAMPLED from the masked move
      distribution -- softmax over the legal moves' scores, at ``temperature`` --
      so games differ and the model tries moves it isn't yet sure of.
-  2. Reward: every move gets its game's final result from the mover's side,
-     as a score: win 1, draw 0.5, loss 0.
+  2. Reward: every move gets its game's final score from the mover's side.
+     ``end_scoring: result`` (run 1): win 1, draw 0.5, loss 0.
+     ``end_scoring: stockfish`` (run 2): a game that ends WITHOUT a decisive or
+     forced result -- repetition, the 50-move rule, the ply cap -- is scored by
+     Stockfish's win probability for its final position instead of 0.5 (most
+     self-play games are draws, and a draw gives every move ~0 advantage).
+     Checkmate, stalemate, and insufficient material keep their exact result.
   3. Update: one pass over the round's positions with three loss terms:
      - policy gradient:  -advantage * log P(move | position)
        advantage = score - value-head prediction at that position (made when
@@ -33,7 +38,8 @@ Elo-vs-compute curve continues where SFT's ended (``train_gpu_hours`` column).
 
 Main pieces:
 - RLConfig          -- every setting; configs/llm_rl.yaml
-- run_name          -- the run folder's name
+- run_name          -- the run folder's name (+ ``tag``, so a changed config gets its own folder)
+- score_endings     -- end_scoring=stockfish: re-score non-decisive endings from their final position
 - start_policies    -- the trainable policy (SFT weights) + the frozen SFT reference, + SFT's GPU-hours
 - sampling_picker   -- the self-play move picker: sample from the masked distribution
 - build_examples    -- finished games -> training examples (tokens, score, advantage)
@@ -57,6 +63,7 @@ import chess
 import torch
 
 from engine import board as B
+from engine.stockfish import Stockfish
 from model.llm_policy import LLMPolicy, PolicyConfig
 from search.selfplay import MovePicker, SelfPlayGame, play_selfplay_games
 from train.sft import _load_adapters, batch_losses, collate, gpu_hours_at as sft_gpu_hours_at, load_checkpoint
@@ -72,7 +79,7 @@ class RLConfig:
     games_per_round: int = 64
     opening_plies: int = 4            # random opening half-moves per game (variety; not trained on)
     temperature: float = 1.0          # sampling temperature over the legal-move scores
-    max_plies: int = 300              # longer games are adjudicated draws
+    max_plies: int = 300              # longer games stop here (scored per end_scoring)
     step_positions: int = 256         # positions per optimizer step (gradient accumulation)
     micro_batch: int = 16             # positions per forward/backward (bounds GPU memory)
     learning_rate: float = 1.0e-5
@@ -83,10 +90,17 @@ class RLConfig:
     value_loss_weight: float = 1.0
     checkpoint_every: int = 5         # rounds between KEPT checkpoints (the latest round is always on disk)
     seed: int = 0
+    end_scoring: str = "stockfish"    # "result" (run 1) | "stockfish" (run 2): how a non-decisive ending is scored
+    end_scoring_nodes: int = 100_000  # Stockfish search per final position (fixed nodes = reproducible)
+    tag: str = "sfend"                # appended to the run folder name; change it whenever a setting changes
 
     def __post_init__(self):
         if self.value_loss not in ("bce", "mse"):
             raise ValueError(f"value_loss must be 'bce' or 'mse', got {self.value_loss!r}")
+        if self.end_scoring not in ("result", "stockfish"):
+            raise ValueError(f"end_scoring must be 'result' or 'stockfish', got {self.end_scoring!r}")
+        if self.tag and not all(c.isalnum() or c in "-_." for c in self.tag):
+            raise ValueError(f"tag may only use letters, digits, '-', '_', '.': {self.tag!r}")
         if min(self.rounds, self.games_per_round, self.step_positions, self.micro_batch, self.checkpoint_every) < 1:
             raise ValueError("rounds, games_per_round, step_positions, micro_batch, checkpoint_every must be positive")
         if self.temperature <= 0:
@@ -103,10 +117,12 @@ class RLConfig:
 
 
 def run_name(policy_cfg: PolicyConfig, cfg: RLConfig) -> str:
-    """e.g. 'structured_masked_sft25000_s0' (warm start) or 'structured_masked_base_s0' (pure RL)."""
+    """e.g. 'structured_masked_sft25000_s0' (warm start), 'structured_masked_base_s0' (pure RL),
+    'structured_masked_sft25000_s0_sfend' (with ``tag``)."""
     mask = "masked" if policy_cfg.masked else "unmasked"
     start = f"sft{cfg.init_step}" if cfg.init_run else "base"
-    return f"{policy_cfg.representation}_{mask}_{start}_s{cfg.seed}"
+    name = f"{policy_cfg.representation}_{mask}_{start}_s{cfg.seed}"
+    return f"{name}_{cfg.tag}" if cfg.tag else name
 
 
 def start_policies(cfg: RLConfig, artifact_root: str | Path, *, policy_cfg: PolicyConfig | None = None,
@@ -151,6 +167,43 @@ def sampling_picker(policy: LLMPolicy, temperature: float, rng: random.Random) -
         i = rng.choices(range(len(moves)), weights=probs.tolist())[0]
         return moves[i], {"value": value, "entropy": entropy}
     return pick
+
+
+# Endings with no decisive or forced result: their 0.5 says nothing about who stood better.
+RESCORED_ENDINGS = frozenset({"threefold_repetition", "fivefold_repetition", "fifty_moves",
+                              "seventyfive_moves", "max_plies"})
+
+
+def score_endings(games: list[SelfPlayGame], win_prob) -> int:
+    """end_scoring=stockfish: replace a non-decisive game's 0.5 by a judgment of its final position.
+
+    ``win_prob(board) -> float`` is the expected score (0..1) for the side to move
+    (Stockfish.analyse(...).win_prob). It is flipped to White's view and stored as
+    the game's ``white_score``, so every move in the game -- and the value head --
+    trains on it. Checkmate, stalemate, and insufficient material are untouched.
+    Returns how many games were re-scored. Run before build_examples.
+    """
+    n = 0
+    for g in games:
+        if g.termination not in RESCORED_ENDINGS or not g.final_fen:
+            continue
+        board = chess.Board(g.final_fen)
+        if not any(board.legal_moves):
+            continue
+        p = float(win_prob(board))
+        g.white_score = p if board.turn == chess.WHITE else 1.0 - p
+        n += 1
+    return n
+
+
+def ending_counts(games: list[SelfPlayGame]) -> dict:
+    """How the round's games ended (rl_log.csv columns)."""
+    t = [g.termination for g in games]
+    return {"ends_checkmate": t.count("checkmate"),
+            "ends_repetition": t.count("threefold_repetition") + t.count("fivefold_repetition"),
+            "ends_fifty_moves": t.count("fifty_moves") + t.count("seventyfive_moves"),
+            "ends_stalemate": t.count("stalemate"),
+            "ends_insufficient_material": t.count("insufficient_material")}
 
 
 def build_examples(policy: LLMPolicy, games: list[SelfPlayGame]) -> list[dict]:
@@ -339,6 +392,28 @@ def train(policy: LLMPolicy, ref: LLMPolicy, cfg: RLConfig, run_dir: str | Path,
 
     stop_at = cfg.rounds if max_rounds is None else min(cfg.rounds, max_rounds)
     stopped_by_cap = False
+    sf = Stockfish() if cfg.end_scoring == "stockfish" else None   # one process, CPU, for the whole session
+    try:
+        stopped_by_cap = _round_loop(policy, ref, cfg, run_dir, counters, stop_at, optimizer, scaler, sf,
+                                     max_gpu_hours, total_hours, sync, log)
+    finally:
+        if sf is not None:
+            sf.close()
+
+    summary = {**counters, "rl_gpu_hours": round(counters["gpu_seconds"] / 3600, 4),
+               "train_gpu_hours": round(total_hours(), 4), "finished": counters["round"] >= cfg.rounds,
+               "stopped_by_cap": stopped_by_cap,
+               "kept_checkpoints": [r for r, _ in list_checkpoints(run_dir)]}
+    if device.type == "cuda":
+        summary["peak_gpu_memory_gb"] = round(torch.cuda.max_memory_allocated(device) / 1e9, 2)
+    (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    return summary
+
+
+def _round_loop(policy, ref, cfg, run_dir, counters, stop_at, optimizer, scaler, sf, max_gpu_hours, total_hours,
+                sync, log) -> bool:
+    """The rounds of ``train`` (self-play, scoring, update, save, log). Returns True if stopped by the cap."""
+    stopped_by_cap = False
     while counters["round"] < stop_at:
         if max_gpu_hours is not None and total_hours() >= max_gpu_hours:
             stopped_by_cap = True
@@ -352,6 +427,13 @@ def train(policy: LLMPolicy, ref: LLMPolicy, cfg: RLConfig, run_dir: str | Path,
         pick = sampling_picker(policy, cfg.temperature, random.Random(round_seed))
         games = play_selfplay_games(pick, cfg.games_per_round, opening_plies=cfg.opening_plies,
                                     max_plies=cfg.max_plies, seed=round_seed)
+        results = [g.white_score for g in games]          # the real results, before any re-scoring
+        sf_seconds, rescored, lopsided = 0.0, 0, 0
+        if sf is not None:
+            ts = time.perf_counter()
+            rescored = score_endings(games, lambda b: sf.analyse(b, nodes=cfg.end_scoring_nodes).win_prob)
+            sf_seconds = time.perf_counter() - ts
+            lopsided = sum(g.termination in RESCORED_ENDINGS and abs(g.white_score - 0.5) > 0.2 for g in games)
         sync()
         t1 = time.perf_counter()
         examples = build_examples(policy, games)
@@ -367,32 +449,30 @@ def train(policy: LLMPolicy, ref: LLMPolicy, cfg: RLConfig, run_dir: str | Path,
 
         infos = [r.info for g in games for r in g.moves]
         row = {"round": rnd, "games": len(games), "positions": len(examples),
-               "white_wins": sum(g.white_score == 1.0 for g in games),
-               "draws": sum(g.white_score == 0.5 for g in games),
-               "black_wins": sum(g.white_score == 0.0 for g in games),
+               "white_wins": sum(s == 1.0 for s in results),
+               "draws": sum(s == 0.5 for s in results),
+               "black_wins": sum(s == 0.0 for s in results),
                "max_plies_draws": sum(g.termination == "max_plies" for g in games),
+               **ending_counts(games),
+               "rescored_games": rescored, "rescored_lopsided": lopsided,
                "avg_plies": round(sum(g.plies for g in games) / len(games), 1),
                "entropy": round(sum(i["entropy"] for i in infos) / max(len(infos), 1), 4),
                "value_pred": round(sum(i["value"] for i in infos) / max(len(infos), 1), 4),
                "abs_advantage": round(sum(abs(e["advantage"]) for e in examples) / max(len(examples), 1), 4),
                **{k: round(v, 5) for k, v in losses.items()},
                "selfplay_seconds": round(t1 - t0, 1), "update_seconds": round(t2 - t1, 1),
+               "stockfish_seconds": round(sf_seconds, 1),
                "rl_gpu_hours": round(counters["gpu_seconds"] / 3600, 4),
                "train_gpu_hours": round(total_hours(), 4)}
         _append_csv(run_dir / "rl_log.csv", row)
         log(f"[round {rnd}/{cfg.rounds}] W/D/L {row['white_wins']}/{row['draws']}/{row['black_wins']} "
             f"({row['avg_plies']} plies) | entropy {row['entropy']:.2f} | kl {row['kl']:.4f} | "
             f"value loss {row['value_loss']:.3f} | self-play {row['selfplay_seconds']:.0f}s + update "
-            f"{row['update_seconds']:.0f}s | total {row['train_gpu_hours']:.2f} GPU-h")
-
-    summary = {**counters, "rl_gpu_hours": round(counters["gpu_seconds"] / 3600, 4),
-               "train_gpu_hours": round(total_hours(), 4), "finished": counters["round"] >= cfg.rounds,
-               "stopped_by_cap": stopped_by_cap,
-               "kept_checkpoints": [r for r, _ in list_checkpoints(run_dir)]}
-    if device.type == "cuda":
-        summary["peak_gpu_memory_gb"] = round(torch.cuda.max_memory_allocated(device) / 1e9, 2)
-    (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
-    return summary
+            f"{row['update_seconds']:.0f}s | total {row['train_gpu_hours']:.2f} GPU-h"
+            + (f" | ends: mate {row['ends_checkmate']}, repetition {row['ends_repetition']}, "
+               f"50-move {row['ends_fifty_moves']}, cap {row['max_plies_draws']} | re-scored {rescored} "
+               f"({lopsided} lopsided)" if sf is not None else ""))
+    return stopped_by_cap
 
 
 # ------------------------------------------------------- compute used ----

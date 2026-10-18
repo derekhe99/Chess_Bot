@@ -21,11 +21,19 @@ pytest.importorskip("peft")
 
 from engine import board as B
 from eval.anchors import RandomAgent
-from search.selfplay import play_selfplay_game, play_selfplay_games
+from search.selfplay import SelfPlayGame, play_selfplay_game, play_selfplay_games
 from tests.test_sft import make_policy
 from tests.test_llm_policy import tiny_tokenizer
-from train.llm_rl import (RLConfig, build_examples, gpu_hours_at, list_checkpoints, run_name, sampling_picker,
-                          train, update)
+from train.llm_rl import (RLConfig, build_examples, ending_counts, gpu_hours_at, list_checkpoints, run_name,
+                          sampling_picker, score_endings, train, update)
+
+try:
+    from engine.stockfish import find_stockfish
+    find_stockfish()
+    HAVE_SF = True
+except (FileNotFoundError, ImportError):
+    HAVE_SF = False
+needs_sf = pytest.mark.skipif(not HAVE_SF, reason="Stockfish binary not found (run the setup notebook)")
 
 
 @pytest.fixture(scope="module")
@@ -40,7 +48,7 @@ def random_picker(seed=0):
 
 def small_cfg(**changes):
     base = dict(init_run=None, rounds=2, games_per_round=2, opening_plies=2, max_plies=16, step_positions=8,
-                micro_batch=4, learning_rate=1e-2, checkpoint_every=2, seed=0)
+                micro_batch=4, learning_rate=1e-2, checkpoint_every=2, seed=0, end_scoring="result", tag="")
     return RLConfig(**{**base, **changes})
 
 
@@ -68,6 +76,14 @@ def test_selfplay_ply_cap_is_a_draw_and_openings_are_seeded():
     b = play_selfplay_games(random_picker(), 3, opening_plies=4, max_plies=10, seed=1)
     assert [g.opening for g in a] == [g.opening for g in b]
     assert len({tuple(g.opening) for g in a}) > 1
+
+
+def test_selfplay_records_the_final_position():
+    for g in play_selfplay_games(random_picker(), 3, opening_plies=2, max_plies=30, seed=2):
+        board = B.new_board()
+        for mv in g.opening + [r.move for r in g.moves]:
+            B.apply_move(board, mv)
+        assert g.final_fen == board.fen()
 
 
 def test_selfplay_refuses_an_illegal_move():
@@ -140,6 +156,52 @@ def test_resume_with_other_settings_is_refused(tok, tmp_path):
     train(make_policy(tok), make_policy(tok), small_cfg(rounds=1), tmp_path, log=lambda *_: None)
     with pytest.raises(ValueError):
         train(make_policy(tok), make_policy(tok), small_cfg(rounds=1, kl_coef=0.5), tmp_path, log=lambda *_: None)
+
+
+# ------------------------------------------------- end scoring (run 2) ----
+
+def _game(fen, termination, white_score):
+    return SelfPlayGame([], [], white_score, termination, 0, fen)
+
+
+def test_score_endings_rescores_only_non_decisive_endings():
+    mate = chess.Board()
+    for mv in ["f2f3", "e7e5", "g2g4", "d8h4"]:     # fool's mate: White is mated
+        mate.push_uci(mv)
+    stalemate = "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1"
+    black_to_move = chess.Board()
+    black_to_move.push_uci("e2e4")
+    games = [_game(mate.fen(), "checkmate", 0.0), _game(stalemate, "stalemate", 0.5),
+             _game(chess.STARTING_FEN, "max_plies", 0.5),          # White to move
+             _game(black_to_move.fen(), "threefold_repetition", 0.5),
+             _game(chess.STARTING_FEN, "fifty_moves", 0.5)]
+    n = score_endings(games, lambda board: 0.8)           # side to move expects 0.8
+    assert n == 3
+    assert [g.white_score for g in games] == pytest.approx([0.0, 0.5, 0.8, 0.2, 0.8])
+    counts = ending_counts(games)
+    assert counts == {"ends_checkmate": 1, "ends_repetition": 1, "ends_fifty_moves": 1, "ends_stalemate": 1,
+                      "ends_insufficient_material": 0}
+
+
+def test_run_name_tag_and_settings_are_checked(tok):
+    pcfg = make_policy(tok).config
+    assert run_name(pcfg, small_cfg()).endswith("_s0")
+    assert run_name(pcfg, small_cfg(tag="sfend")) == run_name(pcfg, small_cfg()) + "_sfend"
+    with pytest.raises(ValueError):
+        small_cfg(tag="a/b")
+    with pytest.raises(ValueError):
+        small_cfg(end_scoring="material")
+
+
+@needs_sf
+def test_train_with_stockfish_end_scoring_logs_the_endings(tok, tmp_path):
+    import csv
+    cfg = small_cfg(rounds=1, end_scoring="stockfish", end_scoring_nodes=2000, tag="sfend")
+    train(make_policy(tok), make_policy(tok), cfg, tmp_path, log=lambda *_: None)
+    row = next(csv.DictReader(open(tmp_path / "rl_log.csv", newline="")))
+    non_decisive = int(row["max_plies_draws"]) + int(row["ends_repetition"]) + int(row["ends_fifty_moves"])
+    assert int(row["rescored_games"]) == non_decisive > 0     # 16-ply games mostly hit the cap
+    assert float(row["stockfish_seconds"]) >= 0
 
 
 def test_llm_rl_yaml_matches_the_config():
