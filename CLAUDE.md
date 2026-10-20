@@ -75,8 +75,8 @@ Rules:
     cap), nothing else changed; `tag: sfend`. Added: run-name `tag`, game-ending counts in
     `rl_log.csv`, `eval/plots.py` (Elo vs. compute, saved by notebooks 02 and 04).
   - Run 2 first rounds (Oct 20): draws are mostly insufficient material and stalemate (not
-    re-scored), so only ~5% of games get a new reward; expected to look like run 1. Running to
-    the cap anyway (Derek's call) for a clean data point.
+    re-scored), so only ~5% of games get a new reward. Result: 20 rounds, 18.09 total GPU-h;
+    Elo r5 689, r10 655, r15 689, r20 664 vs. SFT 681: flat (H0), like run 1.
   - Run 3 (Oct 20, plan Step 7): curriculum, rounds 1-10 at a 120-ply cap scored by Stockfish,
     then 300 plies with run 2's scoring; `tag: curric120`. Launch only after run 2 finishes
     (don't `git pull` on the pod while a run is going). Stockfish-as-critic was rejected (too
