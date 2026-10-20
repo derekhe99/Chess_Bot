@@ -13,6 +13,9 @@ own games. Each ROUND (plan Sec 0 terminology):
      Stockfish's win probability for its final position instead of 0.5 (most
      self-play games are draws, and a draw gives every move ~0 advantage).
      Checkmate, stalemate, and insufficient material keep their exact result.
+     Curriculum (run 3): ``late_from_round`` switches the ply cap from
+     ``max_plies`` to ``max_plies_late`` -- short games scored by Stockfish at the
+     cap first (middlegame signal), then full games (converting an advantage).
   3. Update: one pass over the round's positions with three loss terms:
      - policy gradient:  -advantage * log P(move | position)
        advantage = score - value-head prediction at that position (made when
@@ -79,7 +82,7 @@ class RLConfig:
     games_per_round: int = 64
     opening_plies: int = 4            # random opening half-moves per game (variety; not trained on)
     temperature: float = 1.0          # sampling temperature over the legal-move scores
-    max_plies: int = 300              # longer games stop here (scored per end_scoring)
+    max_plies: int = 120              # longer games stop here (scored per end_scoring)
     step_positions: int = 256         # positions per optimizer step (gradient accumulation)
     micro_batch: int = 16             # positions per forward/backward (bounds GPU memory)
     learning_rate: float = 1.0e-5
@@ -92,13 +95,19 @@ class RLConfig:
     seed: int = 0
     end_scoring: str = "stockfish"    # "result" (run 1) | "stockfish" (run 2): how a non-decisive ending is scored
     end_scoring_nodes: int = 100_000  # Stockfish search per final position (fixed nodes = reproducible)
-    tag: str = "sfend"                # appended to the run folder name; change it whenever a setting changes
+    tag: str = "curric120"            # appended to the run folder name; change it whenever a setting changes
+    late_from_round: int | None = 11  # curriculum: from this round on, games use max_plies_late (None = off)
+    max_plies_late: int | None = 300
 
     def __post_init__(self):
         if self.value_loss not in ("bce", "mse"):
             raise ValueError(f"value_loss must be 'bce' or 'mse', got {self.value_loss!r}")
         if self.end_scoring not in ("result", "stockfish"):
             raise ValueError(f"end_scoring must be 'result' or 'stockfish', got {self.end_scoring!r}")
+        if (self.late_from_round is None) != (self.max_plies_late is None):
+            raise ValueError("set both late_from_round and max_plies_late, or neither")
+        if self.late_from_round is not None and (self.late_from_round < 2 or self.max_plies_late < 1):
+            raise ValueError("late_from_round must be >= 2 and max_plies_late positive")
         if self.tag and not all(c.isalnum() or c in "-_." for c in self.tag):
             raise ValueError(f"tag may only use letters, digits, '-', '_', '.': {self.tag!r}")
         if min(self.rounds, self.games_per_round, self.step_positions, self.micro_batch, self.checkpoint_every) < 1:
@@ -114,6 +123,19 @@ class RLConfig:
         if unknown:
             raise ValueError(f"unknown RL settings {sorted(unknown)}")
         return cls(**d)
+
+    def max_plies_at(self, rnd: int) -> int:
+        """The ply cap for round ``rnd`` (the curriculum switches it at late_from_round)."""
+        if self.late_from_round is not None and rnd >= self.late_from_round:
+            return self.max_plies_late
+        return self.max_plies
+
+
+# Settings added after earlier runs started, with the value that reproduces how those runs
+# behaved. A run_config.json missing one is read as having that value, so an older run can
+# still be resumed (or re-evaluated) with newer code.
+ADDED_SETTINGS = {"end_scoring": "result", "end_scoring_nodes": 100_000, "tag": "",
+                  "late_from_round": None, "max_plies_late": None}
 
 
 def run_name(policy_cfg: PolicyConfig, cfg: RLConfig) -> str:
@@ -359,6 +381,7 @@ def train(policy: LLMPolicy, ref: LLMPolicy, cfg: RLConfig, run_dir: str | Path,
     cfg_path = run_dir / "run_config.json"
     if cfg_path.exists():
         saved = json.loads(cfg_path.read_text())
+        saved["rl"] = {**ADDED_SETTINGS, **(saved.get("rl") or {})}
         if json.loads(json.dumps(settings)) != {k: saved.get(k) for k in settings}:
             raise ValueError(f"{run_dir} was started with different settings; use a new run folder")
     else:
@@ -425,8 +448,9 @@ def _round_loop(policy, ref, cfg, run_dir, counters, stop_at, optimizer, scaler,
         sync()
         t0 = time.perf_counter()
         pick = sampling_picker(policy, cfg.temperature, random.Random(round_seed))
+        max_plies = cfg.max_plies_at(rnd)
         games = play_selfplay_games(pick, cfg.games_per_round, opening_plies=cfg.opening_plies,
-                                    max_plies=cfg.max_plies, seed=round_seed)
+                                    max_plies=max_plies, seed=round_seed)
         results = [g.white_score for g in games]          # the real results, before any re-scoring
         sf_seconds, rescored, lopsided = 0.0, 0, 0
         if sf is not None:
@@ -448,7 +472,7 @@ def _round_loop(policy, ref, cfg, run_dir, counters, stop_at, optimizer, scaler,
         _save_round(policy, run_dir, rnd, optimizer, scaler, counters, cfg)
 
         infos = [r.info for g in games for r in g.moves]
-        row = {"round": rnd, "games": len(games), "positions": len(examples),
+        row = {"round": rnd, "max_plies": max_plies, "games": len(games), "positions": len(examples),
                "white_wins": sum(s == 1.0 for s in results),
                "draws": sum(s == 0.5 for s in results),
                "black_wins": sum(s == 0.0 for s in results),

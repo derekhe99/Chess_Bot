@@ -74,6 +74,16 @@ Rules:
   - Run 2 (Oct 18, plan Step 7): Stockfish scores non-checkmate endings (repetition, 50-move,
     cap), nothing else changed; `tag: sfend`. Added: run-name `tag`, game-ending counts in
     `rl_log.csv`, `eval/plots.py` (Elo vs. compute, saved by notebooks 02 and 04).
+  - Run 2 first rounds (Oct 20): draws are mostly insufficient material and stalemate (not
+    re-scored), so only ~5% of games get a new reward; expected to look like run 1. Running to
+    the cap anyway (Derek's call) for a clean data point.
+  - Run 3 (Oct 20, plan Step 7): curriculum, rounds 1-10 at a 120-ply cap scored by Stockfish,
+    then 300 plies with run 2's scoring; `tag: curric120`. Launch only after run 2 finishes
+    (don't `git pull` on the pod while a run is going). Stockfish-as-critic was rejected (too
+    SFT-like).
+  - Branch per run (Derek, Oct 20): each RL run's code lives on its own branch so its results
+    can be reproduced: `step-7-llm-rl` = run 2 (`0091940`), `step-7-run3-curric` = run 3.
+    Older run folders still resume with newer code (`ADDED_SETTINGS` in `train/llm_rl.py`).
   - Not merged to `main` yet (Derek's call). No stop rules for now; reruns decided per run.
 
 ## How code runs (one source of truth per thing)

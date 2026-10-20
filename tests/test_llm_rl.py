@@ -48,7 +48,8 @@ def random_picker(seed=0):
 
 def small_cfg(**changes):
     base = dict(init_run=None, rounds=2, games_per_round=2, opening_plies=2, max_plies=16, step_positions=8,
-                micro_batch=4, learning_rate=1e-2, checkpoint_every=2, seed=0, end_scoring="result", tag="")
+                micro_batch=4, learning_rate=1e-2, checkpoint_every=2, seed=0, end_scoring="result", tag="",
+                late_from_round=None, max_plies_late=None)
     return RLConfig(**{**base, **changes})
 
 
@@ -191,6 +192,30 @@ def test_run_name_tag_and_settings_are_checked(tok):
         small_cfg(tag="a/b")
     with pytest.raises(ValueError):
         small_cfg(end_scoring="material")
+
+
+def test_curriculum_switches_the_ply_cap_at_late_from_round(tok, tmp_path):
+    import csv
+    cfg = small_cfg(rounds=3, max_plies=8, late_from_round=3, max_plies_late=20)
+    assert [cfg.max_plies_at(r) for r in (1, 2, 3, 4)] == [8, 8, 20, 20]
+    assert small_cfg().max_plies_at(50) == 16                    # off: always max_plies
+    with pytest.raises(ValueError):
+        small_cfg(late_from_round=3)                             # needs max_plies_late too
+    train(make_policy(tok), make_policy(tok), cfg, tmp_path, log=lambda *_: None)
+    rows = list(csv.DictReader(open(tmp_path / "rl_log.csv", newline="")))
+    assert [int(r["max_plies"]) for r in rows] == [8, 8, 20]
+
+
+def test_older_run_configs_resume_with_newer_settings(tok, tmp_path):
+    cfg = small_cfg(rounds=2)
+    train(make_policy(tok), make_policy(tok), cfg, tmp_path, max_rounds=1, log=lambda *_: None)
+    path = tmp_path / "run_config.json"
+    saved = json.loads(path.read_text())
+    for k in ("end_scoring", "end_scoring_nodes", "tag", "late_from_round", "max_plies_late"):
+        del saved["rl"][k]                                       # as written by run 1's code
+    path.write_text(json.dumps(saved))
+    s = train(make_policy(tok), make_policy(tok), cfg, tmp_path, log=lambda *_: None)
+    assert s["round"] == 2
 
 
 @needs_sf
