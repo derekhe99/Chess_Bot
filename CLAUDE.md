@@ -60,19 +60,40 @@ Rules:
   has 10 rows (pin, 5 references, 4 SFT checkpoints on an L4 pod). Elo (CI), 60 games each:
   5k = 655 (621–689), 10k = 689 (655–722), 15k = 706 (664–748), 25k = 681 (638–714);
   train GPU-h 1.54 / 3.08 / 4.61 / 7.69; ~0.09 s/move; illegal rate 0.
-  - Code done (Oct 10, plan v4): `eval.anchors.ResultsTable` over
-    `results/results.csv` (role = pin / reference / model) replaces `FrozenRegistry`,
-    `reference_set.csv`, `model_ratings.csv`, `experiments.csv`;
-    `evaluate_agent(..., batch_games=10, on_batch=...)` saves after every batch; cut
-    `utils/` entirely, `games_from_counts`, `append_rating_log`, `screen_checkpoints`, the
-    provisional/frozen status. Notebook setup cells read `artifact_root` from
-    `configs/base.yaml` (no Drive mount).
-  - Oct 17: the first pod had no network volume, so it was terminated at $0 balance and its
-    data was lost. Rebuilt from the Drive copies: network volume `chess-ai` (EU-RO-1, 30 GB)
-    mounted at `/workspace`; budget-cap watchdog in `docs/runpod_runbook.md`.
-  - Still open: fill `gpu_usd_per_hour` in `configs/base.yaml` (source + date). Back up
-    `results.csv` to the laptop after every run.
-  - Next: Step 7 (RL). Merge `main` into the Step 7 branch first (plan Sec 4 prerequisites).
+  - Oct 17: Network volume `chess-ai` (EU-RO-1, 30 GB) mounted at `/workspace`; budget-cap watchdog in `docs/runpod_runbook.md`.
+  - Focus (Oct 17, plan v4 update): structured + masked only. SFT vs. self-play RL, then LLM +
+    MCTS (planned after AlphaZero). The 2x2 sweep (Step 8) is deferred; `max_gpu_hours_per_arm`
+    is decided later.
+- Step 7 — code written Oct 17 (branch `step-7-llm-rl`): `search/selfplay.py` (pluggable
+  move picker, one game at a time), `train/llm_rl.py` (REINFORCE, value-head baseline, KL to
+  the SFT model, resumable, `rl_log.csv`), `configs/llm_rl.yaml` (provisional defaults),
+  `04_train_llm_rl.ipynb`. Warm-starts from SFT step 25,000. Step 6 merged in.
+  - Run 1 (Oct 18, defaults): 20 rounds, 10.47 RL GPU-h (18.16 total), stopped by the cap.
+    Healthy (entropy ~1.9, KL ~0.04) but flat: r5 647, r10 714, r15 681, r20 689 vs. SFT 25k
+    681 (H0). ~67% draws and a value head at chance, so little signal. Gate met (stable, flat).
+  - Run 2 (Oct 18, plan Step 7): Stockfish scores non-checkmate endings (repetition, 50-move,
+    cap), nothing else changed; `tag: sfend`. Added: run-name `tag`, game-ending counts in
+    `rl_log.csv`, `eval/plots.py` (Elo vs. compute, saved by notebooks 02 and 04).
+  - Run 2 first rounds (Oct 20): draws are mostly insufficient material and stalemate (not
+    re-scored), so only ~5% of games get a new reward. Result: 20 rounds, 18.09 total GPU-h;
+    Elo r5 689, r10 655, r15 689, r20 664 vs. SFT 681: flat (H0), like run 1.
+  - Run 3 (Oct 20, plan Step 7): curriculum, rounds 1-10 at a 120-ply cap scored by Stockfish,
+    then 300 plies with run 2's scoring; `tag: curric120`. Launched Oct 20 after run 2 (don't
+    `git pull` on the pod while a run is going). Rounds 1-12 (plan Step 7): far more games
+    re-scored, value loss below ln 2 for the first time, checkmates up at round 12. Evals after
+    training. Stockfish-as-critic was rejected (too SFT-like).
+  - Branch per run (Derek, Oct 20): each RL run's code lives on its own branch so its results
+    can be reproduced: `step-7-llm-rl` = run 2 (`0091940`), `step-7-run3-curric` = run 3.
+    Older run folders still resume with newer code (`ADDED_SETTINGS` in `train/llm_rl.py`).
+  - Merge (Oct 21, Derek's call): Step 7 merges into `main` before run 3's evals (gate met by
+    runs 1-2). Run code tagged `run1-default` (`608e187`), `run2-sfend` (`0091940`),
+    `run3-curric` (`04e245a`). No stop rules for now; reruns decided per run.
+- Step 9 — next (Oct 21): AlphaZero on `step-9-alphazero`, cut from `main` after the Step 7
+  merge. The full implementation spec is plan Step 9 (a)-(h); build in that order. First
+  commit: `results.csv` saves merge under a lock file instead of overwriting (two pods can
+  share the volume). Cap staged 9 / 18 / 30 GPU-h, extended by resuming. Hyperparameters are
+  provisional until Derek confirms them after the smoke run (plan Sec 5 item 4). Can train on
+  a second pod; each watchdog then uses the combined rate.
 
 ## How code runs (one source of truth per thing)
 
@@ -80,7 +101,8 @@ Rules:
 2. **RunPod** (Step 6 onward; Steps 0–5 ran on Colab) — where it executes. On-demand L4
    pod with a network volume at `/workspace`. Repo cloned once to `/workspace/Chess_Bot`,
    `git pull` each session; code is never edited on the pod. Long jobs run headless in
-   tmux with a budget cap (`timeout` + `runpodctl stop pod $RUNPOD_POD_ID`, plan Sec 1).
+   tmux with a budget-cap watchdog (a background timer that runs
+   `runpodctl stop pod $RUNPOD_POD_ID`; `docs/runpod_runbook.md`, plan Sec 1).
    Always attach the network volume to the pod. `HF_TOKEN` is a pod environment variable.
 3. **Artifacts** — `artifact_root` in `configs/base.yaml` (`/workspace/chess-ai`):
    `data/processed`, `checkpoints/{sft,llm_rl,alphazero}`, `results/results.csv`.
