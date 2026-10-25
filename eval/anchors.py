@@ -19,7 +19,8 @@ Main pieces:
 - fixed_ratings      -- pinned ratings + frozen ratings: what the Elo fit holds fixed
 - build_reference_agents -- playable agents for reference rows (incl. checkpoint rungs)
 - ResultsTable       -- results/results.csv, the one file of record: the pin, the frozen
-                        reference set, and every evaluated model (plan v4, Sec 2.2)
+                        reference set, and every evaluated model (plan v4, Sec 2.2). Saves
+                        merge under a lock file, so jobs sharing the file keep each other's rows
 
 Every member follows the harness's Agent interface (eval/match.py): a ``name``
 and ``select_move(board) -> UCI string``.
@@ -29,7 +30,11 @@ from __future__ import annotations
 import csv
 import datetime as _dt
 import json
+import os
 import random
+import secrets
+import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -226,13 +231,26 @@ class ResultsTable:
 
     Every rating depends on the exact Stockfish build, so loading refuses a file whose
     reference rows were measured with a different version.
+
+    Several jobs may share the file (two pods on one network volume): ``save()`` merges
+    under a lock instead of overwriting, so each job only ever replaces its own rows.
     """
+
+    # save() lock: a lock file older than this is assumed left behind by a crashed process.
+    LOCK_STALE_SECONDS = 600.0
+    LOCK_RETRY_SECONDS = 0.1
 
     def __init__(self, path: str | Path, specs=REFERENCE_SET):
         """Open ``path`` (created on first save). Pin rows always exist, even before a save."""
         self.path = Path(path)
         self.specs = specs
-        self.rows: dict[str, dict] = {}
+        self.rows: dict[str, dict] = self._read_rows()
+        self._changed: set[str] = set()   # rows this instance wrote since its last save()
+        self._add_pins(self.rows)
+
+    def _read_rows(self) -> dict[str, dict]:
+        """{name: row} from the file on disk ({} if it doesn't exist yet)."""
+        rows: dict[str, dict] = {}
         if self.path.exists():
             with open(self.path, newline="") as f:
                 for row in csv.DictReader(f):
@@ -240,11 +258,15 @@ class ResultsTable:
                     if row["role"] != "model" and v is not None and v != SF_VERSION:
                         raise RuntimeError(f"{row['name']!r} was rated with {v!r}, but the code pins "
                                            f"{SF_VERSION!r}; its rating doesn't carry over")
-                    self.rows[row["name"]] = {k: row.get(k, "") for k in RESULTS_COLUMNS}
-        for s in specs:
+                    rows[row["name"]] = {k: row.get(k, "") for k in RESULTS_COLUMNS}
+        return rows
+
+    def _add_pins(self, rows: dict[str, dict]) -> None:
+        """Pin rows always come from ``specs``, never from the file."""
+        for s in self.specs:
             if s.pin is not None:
-                self.rows[s.name] = self._row(s.name, "pin", s.pin, s.pin, s.pin, "",
-                                              spec=asdict(s), stockfish_version=SF_VERSION)
+                rows[s.name] = self._row(s.name, "pin", s.pin, s.pin, s.pin, "",
+                                         spec=asdict(s), stockfish_version=SF_VERSION)
 
     @staticmethod
     def _row(name, role, rating, ci_low, ci_high, games, **fields) -> dict:
@@ -283,6 +305,7 @@ class ResultsTable:
         sf = SF_VERSION if spec.get("kind") == "stockfish" else ""
         self.rows[name] = self._row(name, "reference", rating, ci_low, ci_high, games, spec=spec,
                                     note=note, stockfish_version=sf)
+        self._changed.add(name)
 
     def log_model(self, estimate, records=(), **fields) -> dict:
         """Write (or overwrite) a model's row from an Elo estimate and its eval games.
@@ -310,16 +333,71 @@ class ResultsTable:
             fields["note"] = (f"OFF SCALE ({estimate.at_bound}) " + str(fields.get("note", ""))).strip()
         self.rows[name] = self._row(name, "model", estimate.rating, estimate.ci_low, estimate.ci_high,
                                     estimate.games, **fields)
+        self._changed.add(name)
         return self.rows[name]
 
+    @contextmanager
+    def _lock(self):
+        """Hold ``results.csv.lock`` (next to the file) while re-reading and rewriting it.
+
+        A plain lock FILE, created with O_CREAT | O_EXCL (exactly one process can create
+        it), rather than fcntl.flock, which may not work on the RunPod network volume
+        two pods share. If the lock exists, wait and retry; a lock older than
+        LOCK_STALE_SECONDS is treated as left behind by a crashed process and removed.
+        The lock is always removed afterwards.
+        """
+        lock = self.path.with_name(self.path.name + ".lock")
+        while True:
+            try:
+                fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                break
+            except FileExistsError:
+                try:
+                    if time.time() - lock.stat().st_mtime > self.LOCK_STALE_SECONDS:
+                        lock.unlink()           # stale; the next attempt takes it
+                        continue
+                except FileNotFoundError:       # released between our open and stat
+                    continue
+                time.sleep(self.LOCK_RETRY_SECONDS)
+        try:
+            os.write(fd, f"{os.getpid()}\n".encode())
+            os.close(fd)
+            yield
+        finally:
+            try:
+                lock.unlink()
+            except FileNotFoundError:
+                pass
+
     def save(self) -> None:
-        """Write every row: pins, then references, then models."""
+        """Merge this instance's changes into the file on disk: pins, then references, then models.
+
+        Safe when several jobs (e.g. two pods on one volume) share results.csv: under a
+        lock, the file is re-read and only the rows THIS instance wrote since its last
+        save (log_model, add_reference) overwrite their disk version; every other row
+        stays as the other jobs left it. Afterwards ``rows`` is the merged table.
+        """
         order = {r: i for i, r in enumerate(ROLES)}
-        rows = sorted(self.rows.values(), key=lambda r: order[r["role"]])
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        with open(tmp, "w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=RESULTS_COLUMNS)
-            w.writeheader()
-            w.writerows(rows)
-        tmp.replace(self.path)  # never leaves a half-written file behind
+        with self._lock():
+            merged = self._read_rows()
+            for name in self._changed:
+                on_disk = merged.get(name)
+                if on_disk and on_disk["role"] in ("pin", "reference") and on_disk != self.rows[name]:
+                    raise ValueError(f"{name!r} became a {on_disk['role']} in {self.path} after this table "
+                                     f"loaded it; frozen rows are never overwritten")
+                merged[name] = self.rows[name]
+            self._add_pins(merged)
+            rows = sorted(merged.values(), key=lambda r: order[r["role"]])
+            # Unique temp name (pid + random suffix), so two writers never share one temp file.
+            tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+            try:
+                with open(tmp, "w", newline="") as f:
+                    w = csv.DictWriter(f, fieldnames=RESULTS_COLUMNS)
+                    w.writeheader()
+                    w.writerows(rows)
+                os.replace(tmp, self.path)  # never leaves a half-written file behind
+            finally:
+                tmp.unlink(missing_ok=True)
+        self.rows = merged
+        self._changed.clear()

@@ -256,6 +256,86 @@ def test_results_table_rejects_a_different_stockfish_version(tmp_path):
         ResultsTable(path)
 
 
+def _estimate(name, rating=600.0):
+    """A RatingEstimate for ``name`` (only log_model's bookkeeping matters here)."""
+    from eval.elo import RatingEstimate
+    return RatingEstimate(name=name, rating=rating, ci_low=rating - 50, ci_high=rating + 50, games=20,
+                          score=0.5, at_bound=None)
+
+
+def test_results_table_two_writers_keep_each_others_rows(tmp_path):
+    # Two eval jobs (e.g. two pods on one volume) load the same file, each logs its own model.
+    path = tmp_path / "results.csv"
+    ResultsTable(path).save()
+    a, b = ResultsTable(path), ResultsTable(path)
+    a.log_model(_estimate("llm@r5"), run="llm_rl/x")
+    b.log_model(_estimate("az@r5"), run="alphazero/y")
+    a.save()
+    b.save()                                               # used to erase a's row (stale in-memory copy)
+    rows = ResultsTable(path).rows
+    assert rows["llm@r5"]["run"] == "llm_rl/x" and rows["az@r5"]["run"] == "alphazero/y"
+    assert "llm@r5" in b.rows                              # after a save, rows = the merged table
+
+
+def test_results_table_save_does_not_revert_another_writers_update(tmp_path):
+    path = tmp_path / "results.csv"
+    t = ResultsTable(path)
+    t.log_model(_estimate("m", 500.0))
+    t.save()
+    a, b = ResultsTable(path), ResultsTable(path)          # both hold m = 500
+    a.log_model(_estimate("m", 650.0))                     # a's next eval batch updates m
+    a.save()
+    b.add_reference("rung", 900.0, 850.0, 950.0, 40, spec={"kind": "sft_checkpoint", "run": "r", "step": 1})
+    b.save()                                               # b never touched m: its stale 500 must not win
+    rows = ResultsTable(path).rows
+    assert float(rows["m"]["rating"]) == 650.0
+    assert rows["rung"]["role"] == "reference"
+
+
+def test_results_table_never_overwrites_a_reference_frozen_by_another_writer(tmp_path):
+    path = tmp_path / "results.csv"
+    ResultsTable(path).save()
+    a, b = ResultsTable(path), ResultsTable(path)
+    a.add_reference("x", 900.0, 850.0, 950.0, 40, spec={"kind": "sft_checkpoint", "run": "r", "step": 1})
+    a.save()
+    b.log_model(_estimate("x"))                            # b hasn't seen x become a reference
+    with pytest.raises(ValueError):
+        b.save()
+    assert ResultsTable(path).role("x") == "reference"
+
+
+def test_results_table_save_waits_for_the_lock_and_cleans_up(tmp_path):
+    import threading
+    import time
+
+    path = tmp_path / "results.csv"
+    lock = tmp_path / "results.csv.lock"
+    lock.write_text("held by another job")
+    t = ResultsTable(path)
+    t.log_model(_estimate("m"))
+    threading.Timer(0.3, lock.unlink).start()              # the other job finishes its save
+    start = time.perf_counter()
+    t.save()
+    assert time.perf_counter() - start >= 0.25             # waited for the lock instead of writing over it
+    assert ResultsTable(path).role("m") == "model"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["results.csv"]   # no lock or temp file left
+
+
+def test_results_table_breaks_a_stale_lock(tmp_path):
+    import os
+    import time
+
+    path = tmp_path / "results.csv"
+    lock = tmp_path / "results.csv.lock"
+    lock.write_text("left by a crashed job")
+    old = time.time() - ResultsTable.LOCK_STALE_SECONDS - 60
+    os.utime(lock, (old, old))
+    t = ResultsTable(path)
+    t.log_model(_estimate("m"))
+    t.save()                                               # doesn't hang
+    assert ResultsTable(path).role("m") == "model" and not lock.exists()
+
+
 # ---------------------------------------------------------------- match ----
 
 def test_play_game_finishes_and_records():
