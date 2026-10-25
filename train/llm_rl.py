@@ -85,7 +85,7 @@ class RLConfig:
     max_plies: int = 120              # longer games stop here (scored per end_scoring)
     step_positions: int = 256         # positions per optimizer step (gradient accumulation)
     micro_batch: int = 16             # positions per forward/backward (bounds GPU memory)
-    learning_rate: float = 1.0e-5
+    learning_rate: float = 5.0e-5     # run 4; runs 1-3 used 1e-5
     weight_decay: float = 0.0
     grad_clip: float | None = 1.0
     kl_coef: float = 0.1
@@ -95,7 +95,7 @@ class RLConfig:
     seed: int = 0
     end_scoring: str = "stockfish"    # "result" (run 1) | "stockfish" (run 2): how a non-decisive ending is scored
     end_scoring_nodes: int = 100_000  # Stockfish search per final position (fixed nodes = reproducible)
-    tag: str = "curric120"            # appended to the run folder name; change it whenever a setting changes
+    tag: str = "curric120_lr5x"       # appended to the run folder name; change it whenever a setting changes
     late_from_round: int | None = 11  # curriculum: from this round on, games use max_plies_late (None = off)
     max_plies_late: int | None = 300
 

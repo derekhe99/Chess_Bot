@@ -80,14 +80,19 @@ Rules:
   - Run 3 (Oct 20, plan Step 7): curriculum, rounds 1-10 at a 120-ply cap scored by Stockfish,
     then 300 plies with run 2's scoring; `tag: curric120`. Launched Oct 20 after run 2 (don't
     `git pull` on the pod while a run is going). Rounds 1-12 (plan Step 7): far more games
-    re-scored, value loss below ln 2 for the first time, checkmates up at round 12. Evals after
-    training. Stockfish-as-critic was rejected (too SFT-like).
+    re-scored, value loss below ln 2 for the first time, checkmates up at round 12. Result (Oct 21):
+    23 rounds, 18.05 total GPU-h; Elo r5 697, r10 706, r15 647, r20 655 vs. SFT 681: flat (H0),
+    like runs 1-2. Stockfish-as-critic was rejected (too SFT-like).
   - Branch per run (Derek, Oct 20): each RL run's code lives on its own branch so its results
     can be reproduced: `step-7-llm-rl` = run 2 (`0091940`), `step-7-run3-curric` = run 3.
     Older run folders still resume with newer code (`ADDED_SETTINGS` in `train/llm_rl.py`).
   - Merge (Oct 21, Derek's call): Step 7 merges into `main` before run 3's evals (gate met by
     runs 1-2). Run code tagged `run1-default` (`608e187`), `run2-sfend` (`0091940`),
     `run3-curric` (`04e245a`). No stop rules for now; reruns decided per run.
+  - Run 4 (Oct 25, Derek's call, a 4th run): run 3's config with learning rate 5e-5 (5x), the
+    only change; `tag: curric120_lr5x`, branch `step-7-run4-lr5x` from `main`. No new
+    diagnostics, no stop rules. After its evals: merge into `main`, then `main` into
+    `step-9-alphazero`.
 - Step 9 — next (Oct 21): AlphaZero on `step-9-alphazero`, cut from `main` after the Step 7
   merge. The full implementation spec is plan Step 9 (a)-(h); build in that order. First
   commit: `results.csv` saves merge under a lock file instead of overwriting (two pods can
