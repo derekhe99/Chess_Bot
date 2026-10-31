@@ -1,5 +1,6 @@
-# AlphaZero arm (plan Step 9). Every value here is PROVISIONAL until Derek confirms it
-# after the smoke run (plan Sec 5 item 4). Read by train.az_train.load_configs.
+# AlphaZero arm (plan Step 9). Confirmed by Derek on Oct 31 after the smoke run (plan Sec 5
+# item 4): the provisional defaults, except simulations 100 -> 50. Changing any setting below
+# (except max_gpu_hours) makes a different run: change `tag` too. Read by train.az_train.load_configs.
 
 # GPU-hour cap, staged 9 -> 18 -> 30 (plan Step 9). Passed to train(), NOT saved in
 # run_config.json: raise it and rerun to resume the same run. null = no cap.
@@ -12,7 +13,7 @@ net:
 
 # Search (search/mcts.py MCTSConfig). The eval agent uses the same simulation count.
 mcts:
-  simulations: 100          # per move
+  simulations: 50           # per move (100 -> 50, Oct 31: ~2x the games per GPU-hour)
   c_puct: 1.5               # exploration weight
   dirichlet_alpha: 0.3      # root noise, self-play only
   dirichlet_weight: 0.25
@@ -29,6 +30,6 @@ train:
   samples_per_position: 2.0 # update steps K = enough minibatches to sample each new position ~2x
   learning_rate: 1.0e-3     # Adam
   weight_decay: 1.0e-4
-  checkpoint_every: 5       # kept checkpoints; set from the smoke run's round time (4+ per cap stage)
+  checkpoint_every: 5       # kept checkpoints: ~12 in stage 1 at the smoke run's timing (4+ needed per stage)
   seed: 0
   tag: ""                   # appended to the run folder; change it whenever a setting changes

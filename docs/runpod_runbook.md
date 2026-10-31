@@ -197,8 +197,9 @@ LLM job later, first decide with Claude whether AlphaZero gets its own clone (e.
    python -m pytest tests/ -q          # ~1 min; Stockfish tests run here, the Qwen download test skips
    ```
 
-4. **Run notebook 05 headless.** `SMOKE_TEST = True` is the committed default, so nothing
-   needs editing:
+4. **Run notebook 05 headless** with `SMOKE_TEST = True` (the smoke run was done Oct 31 and
+   the committed notebook now says `False`; set it back on the laptop, commit, push, pull to
+   smoke-test again, e.g. after a code change):
 
    ```
    tmux new -s job
@@ -238,11 +239,11 @@ LLM job later, first decide with Claude whether AlphaZero gets its own clone (e.
 
 ### After the smoke run: settings, then stage 1
 
-The settings in `configs/alphazero.yaml` stay provisional until Derek confirms them from
-the smoke numbers (plan Sec 5 item 4), including `checkpoint_every` (4+ kept checkpoints
-per cap stage). Then, on the laptop: set `SMOKE_TEST = False` in notebook 05, commit, push;
-on the pod: pull, watchdog, run the same command. The smoke run's own folder is separate,
-so the real run starts fresh.
+Settings confirmed Oct 31 (plan Sec 5 item 4): the provisional defaults with 50 simulations
+per move, and notebook 05 committed with `SMOKE_TEST = False`. Stage 1 on the pod: steps 1-3
+above (with the stage-1 `BAL` below), then step 4's command; `az_b6c64_s0_smoke` is separate,
+so the real run (`az_b6c64_s0`) starts fresh. Watch it with
+`watch -n 60 'column -s, -t < /workspace/chess-ai/checkpoints/alphazero/az_b6c64_s0/az_log.csv | tail -8'`.
 
 Budget for stage 1 (`max_gpu_hours: 9`): about 9 h of training + up to one round past the
 cap + evals (up to 4 checkpoints x 60 games; plan 1-3 h, as search makes AlphaZero slower

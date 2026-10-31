@@ -94,12 +94,13 @@ Rules:
   share the volume); (a) done Oct 21. Batched self-play lives in `search/mcts.py` (Oct 30,
   Derek), so `search/selfplay.py` is untouched; (b) MCTS, (c) flipping, (d) network, (e)
   training loop, (f) eval agent + plot series, (g) notebook 05 done Oct 30; (h) smoke-run
-  steps in `docs/runpod_runbook.md` section F (Oct 31). Next: Derek runs the smoke run and
-  reports its timings. Cap staged 9 / 18 / 30 GPU-h, extended by resuming. Hyperparameters
-  are provisional until Derek confirms them after the smoke run (plan Sec 5 item 4). Can train
-  on a second pod; each watchdog then uses the combined rate, and AlphaZero would need its own
-  clone of the repo on the volume (runbook section F); decide before running it alongside an
-  LLM job.
+  steps in `docs/runpod_runbook.md` section F (Oct 31). Smoke run passed (Oct 31): search is
+  CPU-bound (~5-CPU pod quota, GPU mostly idle), so settings confirmed with 50 simulations per
+  move instead of 100 (Derek, option B; parallel self-play held in reserve). Next: stage 1
+  (9 GPU-h), notebook 05 with `SMOKE_TEST = False`. Cap staged 9 / 18 / 30 GPU-h, extended by
+  resuming. Can train on a second pod; each watchdog then uses the combined rate, and
+  AlphaZero would need its own clone of the repo on the volume (runbook section F); decide
+  before running it alongside an LLM job.
 
 ## How code runs (one source of truth per thing)
 

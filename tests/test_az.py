@@ -138,7 +138,7 @@ def tiny_cfg(**kw):
 
 def test_yaml_loads_every_section_and_rejects_typos(tmp_path):
     cfg, net, mcts, cap = load_configs("configs/alphazero.yaml")
-    assert (cfg.games_per_round, mcts.simulations, net, cap) == (128, 100, NetConfig(6, 64), 9.0)
+    assert (cfg.games_per_round, mcts.simulations, net, cap) == (128, 50, NetConfig(6, 64), 9.0)   # confirmed Oct 31
     assert run_name(cfg, net) == "az_b6c64_s0" and run_name(tiny_cfg(tag="x1"), TINY_NET) == "az_b1c8_s0_x1"
     bad = tmp_path / "bad.yaml"
     bad.write_text("train:\n  gams_per_round: 3\n")
