@@ -1,4 +1,4 @@
-# Step 3 -- SFT data pipeline (plan v3, Sec 3.2 and Step 3).
+# Step 3 -- SFT data pipeline (plan v3, Sec 3.2 and Step 3); `scaled` below is Step 13 (plan v5).
 # First values; the Step 3 timing run (~5k positions) tunes them. The wider config
 # design (merging, overrides) is still an open alignment point (plan Sec 5).
 
@@ -17,3 +17,14 @@ stockfish_label_depth: 12    # fixed search depth per label; one thread, hash cl
 label_chunk_size: 250        # positions per saved chunk (the resume unit)
 val_fraction: 0.1            # share of GAMES held out for validation
 seed: 0
+
+# Step 13 (plan v5): the scaled dataset, sampled fresh with the same rules as above (phase
+# mix, phase rule, label depth, chunk size, seed). Notebook 01 with BUILD = "scaled".
+scaled:
+  num_positions: 500000
+  # Read in this order until every phase quota is full; a month is downloaded only when
+  # reached. ~225k-580k games each; the endgame quota (~167k) is what needs several.
+  source_months: ["2013-06", "2013-07", "2013-08", "2013-09", "2013-10", "2013-11", "2013-12"]
+  # The one validation set every size shares: this dataset's by-game validation split
+  # (val_fraction, seed above). Its games and positions are never sampled into the 500k.
+  val_from: sft_2013-06_d12_n50000

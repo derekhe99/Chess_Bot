@@ -12,6 +12,8 @@ Main pieces:
                         against Lichess's published checksum
 - iter_games         -- stream games out of the .pgn.zst file without ever
                         decompressing the whole file into memory
+- iter_months        -- the same over several months in order, downloading each one
+                        only when it is reached (Step 13: one month can't fill 500k)
 """
 from __future__ import annotations
 
@@ -114,3 +116,20 @@ def iter_games(path: str | Path, max_games: int | None = None) -> Iterator[chess
                 continue
             count += 1
             yield game
+
+
+def iter_months(months: list[str], cache_dir: str | Path, *, verify: bool = True,
+                used: list[dict] | None = None) -> Iterator[chess.pgn.Game]:
+    """Yield games from several months, in the order given, one game at a time.
+
+    Inputs: months like ["2013-06", "2013-07"]; cache_dir as in ensure_month;
+            used -- if given, a list that gets one {"month", "file", "sha256"} entry per
+            month as it is opened, so the caller can record exactly which files fed a dataset.
+    Core logic: a month is downloaded (and checked) only when the previous one is used
+    up, so a sample that fills early never fetches the later files.
+    """
+    for month in months:
+        path = ensure_month(month, cache_dir, verify=verify)
+        if used is not None:
+            used.append({"month": month, "file": path.name, "sha256": sha256_file(path)})
+        yield from iter_games(path)

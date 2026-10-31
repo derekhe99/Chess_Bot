@@ -10,6 +10,7 @@ Main pieces:
 - PhaseRule / tag_phase  -- the rule that labels a position's phase
 - position_key           -- what counts as "the same position" for dedup
 - phase_quotas           -- target mix -> exact number of positions per phase
+- game_ending            -- how a game ended (checkmate, stalemate, time, ...)
 - sample_positions       -- walk games, fill each phase's quota, return records + stats
 """
 from __future__ import annotations
@@ -92,8 +93,29 @@ def _elo(game: chess.pgn.Game, side: str) -> int | None:
     return int(value) if value.isdigit() else None
 
 
+def game_ending(game: chess.pgn.Game, final: chess.Board) -> str:
+    """How the game ended, from its final position and Lichess's Termination header.
+
+    'checkmate', 'stalemate', 'insufficient_material' (read off the board), else
+    'time' (Termination "Time forfeit"), 'resign_or_draw' (Termination "Normal" with
+    the board still playable: resignation, agreed draw, or a claimed draw), or 'other'
+    (abandoned, rules infraction, missing header). Recorded so the dataset can be
+    checked for won-and-converted games (plan v5 Step 13, near-win positions).
+    """
+    if final.is_checkmate():
+        return "checkmate"
+    if final.is_stalemate():
+        return "stalemate"
+    if final.is_insufficient_material():
+        return "insufficient_material"
+    termination = game.headers.get("Termination", "")
+    return {"Time forfeit": "time", "Normal": "resign_or_draw"}.get(termination, "other")
+
+
 def sample_positions(games: Iterable[chess.pgn.Game], num_positions: int, phase_mix: dict[str, float],
-                     rule: PhaseRule = PhaseRule(), seed: int = 0) -> tuple[list[dict], dict]:
+                     rule: PhaseRule = PhaseRule(), seed: int = 0, *,
+                     exclude_games: set[str] | None = None,
+                     exclude_keys: set[str] | None = None) -> tuple[list[dict], dict]:
     """Fill a per-phase quota of distinct positions from a stream of games.
 
     Inputs:
@@ -102,10 +124,14 @@ def sample_positions(games: Iterable[chess.pgn.Game], num_positions: int, phase_
       phase_mix     -- {"opening": .., "middlegame": .., "endgame": ..}, sums to 1
       rule          -- phase thresholds
       seed          -- same games + same seed -> same sample
+      exclude_games -- game ids to skip entirely (e.g. the fixed validation set's games)
+      exclude_keys  -- position keys (position_key) never to take (e.g. its positions,
+                       which can recur in other games, mostly in the opening)
     Output:
-      records -- one dict per position: fen, phase, ply, game_id, white_elo, black_elo
-      stats   -- games read, targets vs. counts per phase, duplicates skipped, and
-                 whether every quota was filled (``complete``)
+      records -- one dict per position: fen, phase, ply, game_id, white_elo, black_elo,
+                 result ("1-0" / "0-1" / "1/2-1/2") and ending (game_ending)
+      stats   -- games read, games excluded, targets vs. counts per phase, duplicates
+                 skipped, and whether every quota was filled (``complete``)
 
     Core logic: for each game, list the positions it passed through (each one
     right before a move was played, so it always has a legal move to label) and
@@ -117,19 +143,24 @@ def sample_positions(games: Iterable[chess.pgn.Game], num_positions: int, phase_
     rng = random.Random(seed)
     targets = phase_quotas(num_positions, phase_mix)
     buckets: dict[str, list[dict]] = {p: [] for p in PHASES}
-    seen: set[str] = set()
-    games_read = duplicates = 0
+    seen: set[str] = set(exclude_keys or ())
+    exclude_games = exclude_games or set()
+    games_read = duplicates = excluded = 0
 
     for game in games:
         if all(len(buckets[p]) >= targets[p] for p in PHASES):
             break
         games_read += 1
+        gid = _game_id(game, games_read)
+        if gid in exclude_games:
+            excluded += 1
+            continue
         board = game.board()
         by_phase: dict[str, list[tuple[str, str, int]]] = {p: [] for p in PHASES}
         for move in game.mainline_moves():
             by_phase[tag_phase(board, rule)].append((position_key(board), board.fen(), board.ply()))
             board.push(move)
-        gid = _game_id(game, games_read)
+        result, ending = game.headers.get("Result", "*"), game_ending(game, board)
         for p in PHASES:
             if len(buckets[p]) >= targets[p] or not by_phase[p]:
                 continue
@@ -141,11 +172,12 @@ def sample_positions(games: Iterable[chess.pgn.Game], num_positions: int, phase_
                     continue
                 seen.add(key)
                 buckets[p].append({"fen": fen, "phase": p, "ply": ply, "game_id": gid,
-                                   "white_elo": _elo(game, "White"), "black_elo": _elo(game, "Black")})
+                                   "white_elo": _elo(game, "White"), "black_elo": _elo(game, "Black"),
+                                   "result": result, "ending": ending})
                 break
 
     records = [r for p in PHASES for r in buckets[p]]
-    stats = {"games_read": games_read, "duplicates_skipped": duplicates,
+    stats = {"games_read": games_read, "games_excluded": excluded, "duplicates_skipped": duplicates,
              "targets": targets, "counts": {p: len(buckets[p]) for p in PHASES},
              "complete": all(len(buckets[p]) >= targets[p] for p in PHASES)}
     return records, stats
