@@ -16,7 +16,7 @@ max_plies: 120           # longer games stop here (scored per end_scoring below)
 # Update (reward = game result from the mover's side: win 1, draw 0.5, loss 0)
 step_positions: 256      # positions per optimizer step (gradient accumulation over micro-batches)
 micro_batch: 16          # positions per forward/backward; SFT's batch 16 used ~16.5 of 24 GB on the L4
-learning_rate: 1.0e-5    # 10x below SFT's: RL gradients are noisy
+learning_rate: 5.0e-5    # run 4 (Oct 25): 5x runs 1-3's 1e-5, the only change from run 3; RL gradients are noisy
 weight_decay: 0.0
 grad_clip: 1.0
 kl_coef: 0.1             # pull toward the SFT model (KL on the played move)
@@ -32,7 +32,7 @@ seed: 0
 # Checkmate, stalemate, and insufficient material keep their exact result.
 end_scoring: stockfish
 end_scoring_nodes: 100000   # Stockfish search per final position (fixed nodes = reproducible), ~0.1 s on 1 CPU core
-tag: curric120           # appended to the run folder name; give every new config its own tag (run 2: sfend)
+tag: curric120_lr5x      # appended to the run folder name; give every new config its own tag (run 2: sfend, run 3: curric120)
 
 # Curriculum (plan Step 7, run 3, Oct 20): rounds 1-10 cap games at max_plies (120) and Stockfish
 # scores the games still going there (middlegame signal); from late_from_round on, games run to
