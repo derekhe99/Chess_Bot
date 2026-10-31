@@ -1,7 +1,34 @@
 # AlphaZero arm (plan Step 9). Every value here is PROVISIONAL until Derek confirms it
-# after the smoke run (plan Sec 5 item 4). Training settings are added in Step 9 (e).
+# after the smoke run (plan Sec 5 item 4). Read by train.az_train.load_configs.
+
+# GPU-hour cap, staged 9 -> 18 -> 30 (plan Step 9). Passed to train(), NOT saved in
+# run_config.json: raise it and rerun to resume the same run. null = no cap.
+max_gpu_hours: 9
 
 # Network size (model/az_net.py NetConfig): residual blocks x channels.
 net:
   blocks: 6
   channels: 64
+
+# Search (search/mcts.py MCTSConfig). The eval agent uses the same simulation count.
+mcts:
+  simulations: 100          # per move
+  c_puct: 1.5               # exploration weight
+  dirichlet_alpha: 0.3      # root noise, self-play only
+  dirichlet_weight: 0.25
+  temperature_plies: 30     # sample moves by visit count while ply < this, then most-visited
+
+# Training loop (train/az_train.py AZConfig).
+train:
+  rounds: 1000              # upper bound; the GPU-hour cap normally stops first
+  games_per_round: 128
+  opening_plies: 4          # random opening half-moves per game (not trained on)
+  max_plies: 300            # draw at this ply (opening included), as in the LLM runs
+  buffer_positions: 200000  # replay buffer = the most recent positions (~450 MB)
+  batch_size: 256
+  samples_per_position: 2.0 # update steps K = enough minibatches to sample each new position ~2x
+  learning_rate: 1.0e-3     # Adam
+  weight_decay: 1.0e-4
+  checkpoint_every: 5       # kept checkpoints; set from the smoke run's round time (4+ per cap stage)
+  seed: 0
+  tag: ""                   # appended to the run folder; change it whenever a setting changes
