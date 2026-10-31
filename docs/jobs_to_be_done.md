@@ -1,12 +1,12 @@
 # Chess AI — Jobs to Be Done (Steps 0–11)
 
-Oct 21, 2026 · @Derek · regenerated from `implementation_plan_v4.md` (Oct 21 update: Step 7 merged to `main` with runs 1–3; Step 9 AlphaZero specified in implementation detail; staged AlphaZero cap 9 / 18 / 30 GPU-h; `results.csv` saves merge instead of overwrite)
+Oct 31, 2026 · @Derek · regenerated from `implementation_plan_v4.md` (Oct 31 update: Step 7 runs 1–4 all flat; Step 9 AlphaZero built, stage 1 done, gate met; next: AlphaZero no-search evals, stage 2, then LLM + MCTS as play-time search first)
 
 ## What this view is
 
 `implementation_plan_v4.md` gives the repo structure (what each file does) and the build order. This view describes, for each step, the capability it delivers (the L1 "Big picture") and the jobs to be done inside it (the L2 bullets), plain English first and jargon second.
 
-Status: 🟢 core, load-bearing work for that step's milestone · 🟡 breadth or optional, layered on a working 🟢 result. Steps 0–6 are done; Step 7's code is done and merged (run 3's evals pending); Step 9 is next.
+Status: 🟢 core, load-bearing work for that step's milestone · 🟡 breadth or optional, layered on a working 🟢 result. Steps 0–7 are done (Step 7: four RL runs, all flat); Step 9's stage 1 is done and its gate met; next are AlphaZero's no-search evals and stage 2, then the LLM + MCTS arm.
 
 **What the project reports at the end (Step 11):** Elo ± CI per arm; Elo vs. training compute (GPU-hours and dollars), which also shows sample efficiency; and dollars to train and inference dollars per game (plus the illegal-move rate of unmasked arms, if the deferred 2×2 returns). All of it is read from one file, `results/results.csv`.
 
@@ -90,9 +90,9 @@ Status: 🟢 core, load-bearing work for that step's milestone · 🟡 breadth o
 - **Pin the hourly prices:** One GPU and one CPU dollar rate (RunPod on-demand, with source and date) that turn hours into dollars at analysis time. — `configs/base.yaml` — 🟢
 - **Put the SFT run on its compute curve:** Evaluate 3–4 SFT checkpoints into `results.csv` on the pod, which also smoke-tests the whole setup, and time a 20-game match on the pod's CPUs. — `02_train_sft.ipynb` — 🟢
 
-## Step 7 — LLM self-play RL (code done, merged to `main`; run 3's evals pending)
+## Step 7 — LLM self-play RL ✅ (four runs, all flat)
 
-**Big picture:** find out whether letting the SFT model play itself raises its Elo above the SFT plateau (~690), and at what compute. Runs 1–2 were flat; run 3 tests whether a stronger training signal changes that.
+**Big picture:** find out whether letting the SFT model play itself raises its Elo above the SFT plateau (~690), and at what compute. Answer so far: no. Four runs (plain results, Stockfish-scored endings, a middlegame-first curriculum, and that curriculum with a 5× larger update) all stayed at 647–714, within noise of SFT's 681.
 
 **Jobs to be done:**
 
@@ -100,7 +100,8 @@ Status: 🟢 core, load-bearing work for that step's milestone · 🟡 breadth o
 - **Learn from wins and losses:** Give every move in a game that game's score as its reward, and update the model toward moves that turned out better than the model itself expected, with a pull back toward the starting model so it doesn't drift too fast. *(policy gradient + value baseline + KL penalty)* — `train/llm_rl.py` — 🟢
 - **Score unfinished games with Stockfish:** A game that ends by repetition, the 50-move rule, or the ply cap gets Stockfish's win probability for its final position instead of a flat draw, so a game where one side stood clearly better still teaches something; checkmate, stalemate, and insufficient material keep their exact result. Labeled as its own regime, since an engine judges where self-play ended up. *(Stockfish end-scoring, run 2 on)* — `train/llm_rl.py` — 🟡
 - **Teach the middlegame first, then full games:** Rounds 1–10 stop games at 120 plies and let Stockfish judge who stood better; later rounds play to 300 plies so the model also learns to finish a won game. *(two-phase curriculum, run 3)* — `train/llm_rl.py`, `configs/llm_rl.yaml` — 🟡
-- **Keep each run's results reproducible:** Each changed config gets its own run folder through a run-name tag, older runs still resume with newer code, and each run's code is tagged in git. *(run tags + backward-compatible resume)* — `train/llm_rl.py`, git tags `run1-default` / `run2-sfend` / `run3-curric` — 🟢
+- **Test whether bigger updates move the model:** Run 3's setup with a 5× learning rate, the only change, to see if update size rather than the reward was holding it back. *(run 4)* — `configs/llm_rl.yaml` — 🟡
+- **Keep each run's results reproducible:** Each changed config gets its own run folder through a run-name tag, older runs still resume with newer code, and each run's code is tagged in git. *(run tags + backward-compatible resume)* — `train/llm_rl.py`, git tags `run1-default` / `run2-sfend` / `run3-curric` / `run4-lr5x` — 🟢
 - **Count the compute and watch for collapse:** Log per round the results, how games ended, how many were re-scored, losses, drift from the SFT model, and how spread out the model's move choices are, plus the GPU time of self-play and updates; stop at the GPU-hour cap and resume from the last round after a stop. *(KL, policy entropy, safety cap)* — `train/llm_rl.py` — 🟢
 - **Start from the SFT model and put each run on the chart:** Warm-start RL from the SFT checkpoint, evaluate up to 4 kept checkpoints per run into `results.csv`, and confirm Elo is flat or rising. *(warm-start)* — `04_train_llm_rl.ipynb` — 🟢
 - **Draw Elo vs. compute after every run:** One reusable chart from `results.csv` only: SFT checkpoints, each RL run in its own color joined to its starting checkpoint, 95% ranges, and nearby reference ratings. *(Elo-vs-compute plot, pulled forward from Step 11)* — `eval/plots.py` — 🟢
@@ -116,9 +117,9 @@ Status: 🟢 core, load-bearing work for that step's milestone · 🟡 breadth o
 - **Pick the best combination:** Choose the combo from the Elo-vs-compute curves; it becomes "the LLM arm" for Steps 10–11. — 🟢
 - **Add seeds if time allows:** Extra seeds for the leading combos. — 🟡
 
-## Step 9 — AlphaZero arm (next; branch `step-9-alphazero` from `main`)
+## Step 9 — AlphaZero arm (stage 1 ✅, gate met; no-search evals and stage 2 next)
 
-**Big picture:** train the classic search-plus-small-network agent from scratch by pure self-play (game results only, no Stockfish, no human data), as the non-LLM point of comparison, on its own pod if needed.
+**Big picture:** train the classic search-plus-small-network agent from scratch by pure self-play (game results only, no Stockfish, no human data), as the non-LLM point of comparison, on its own pod if needed. Stage 1 (9 GPU-hours): Elo 653 → 729, level with the best LLM checkpoints; it rarely loses, but rarely converts a better position into a win.
 
 **Jobs to be done:**
 
@@ -131,17 +132,19 @@ Status: 🟢 core, load-bearing work for that step's milestone · 🟡 breadth o
 - **Improve by playing itself:** Each round, play self-play games with search, store every position with the search's move preferences and the game's result, and train the network on a buffer of recent positions to predict both; resumable every round, with per-round logs of results, endings, losses, and GPU time. *(self-play + replay buffer + visit-count targets)* — `train/az_train.py`, `configs/alphazero.yaml` — 🟢
 - **Spend compute in stages that line up with the other arms:** Stop at 9 GPU-hours, then extend by resuming to 18 (the LLM's SFT + RL total) and 30 (a placeholder for LLM + MCTS) as needed, always keeping the checkpoint where each stage stops. *(staged safety cap)* — `train/az_train.py` — 🟢
 - **Rate it the same way as every other arm:** A player that searches before each move, rated against the nearest reference opponents into `results.csv` (up to 4 checkpoints per stage, including each stage's last), and drawn on the Elo-vs-compute chart from 0 GPU-hours. — `05_train_alphazero.ipynb`, `eval/match.py`, `eval/plots.py` — 🟢
-- **Test cheaply before the real run:** A 2-round smoke run on the pod that measures seconds per round, so Derek can confirm the provisional settings (network size, games per round, simulations per move, learning rate) before the 9-hour stage. *(smoke run)* — `05_train_alphazero.ipynb` — 🟢
+- **Test cheaply before the real run:** A 2-round smoke run on the pod plus a timing probe at the real batch size, so Derek could confirm the settings before the 9-hour stage; it showed the search is limited by the pod's CPU, so moves search 50 positions ahead instead of 100. *(smoke run)* — `05_train_alphazero.ipynb`, `docs/runpod_runbook.md` — 🟢
+- **Measure how much of its strength is search:** Rate the same checkpoints playing the network's top move with no lookahead, as their own series, so the gap to the searching version shows what search adds; together with the LLM's results this fills a 2×2 of architecture × search. *(no-search evals)* — `train/az_train.py`, `05_train_alphazero.ipynb` — 🟢
+- **Train on to the LLM's compute:** Resume to 18 GPU-hours, matching the LLM's SFT + RL runs, rated against the same opponents as stage 1 so the whole curve uses one yardstick. *(stage 2)* — `configs/alphazero.yaml` — 🟡
 
 ## LLM + MCTS arm (planned, Oct 17; after Step 9)
 
-**Big picture:** test whether a search scaffold makes the LLM much stronger, by putting the structured + masked LLM inside the same tree search AlphaZero uses.
+**Big picture:** test whether a search scaffold makes the LLM much stronger, by putting the structured + masked LLM inside the same tree search AlphaZero uses. First at play time only (option A, decided Oct 31); searching inside training (option B) is decided after A's result.
 
 **Jobs to be done:**
 
-- **Align the design first:** Search only at play time vs. inside the self-play training loop, simulations per move, how its compute is counted, and its cap; aligned after run 3's evals show whether the LLM's win estimate is good enough to judge positions. — plan Sec 5 — 🟢
-- **Reuse the AlphaZero search:** Drive `search/mcts.py` through Step 9's interface, with the LLM's move scores as the suggestions and its value head as the position judge. — `search/mcts.py` — 🟢
-- **Put it on the chart:** 3–4 checkpoints evaluated into `results.csv`; its total compute replaces AlphaZero's 30-GPU-hour placeholder. — `eval/match.py` — 🟢
+- **Let the search use the LLM:** Wrap the SFT model (step 25,000) so the search can ask it for move suggestions (its move probabilities) and a position judgment (its value head, trained on Stockfish's win estimates), without changing the LLM code. *(LLM evaluator for `search/mcts.py`)* — new module — 🟢
+- **Measure what search adds to the same LLM:** Rate the SFT model searching 16 positions ahead per move, against its existing no-search rating (681), with its slower play showing up in seconds per move. *(play-time MCTS, 0 vs. 16 simulations)* — new eval notebook — 🟢
+- **Decide whether to train with search:** If play-time search helps and the value head judges positions well enough, consider searching inside self-play training, as AlphaZero does; its compute and cap are set then. *(option B)* — plan Sec 5 — 🟡
 
 ## Step 10 — LLM Phase 2: regime comparison
 
