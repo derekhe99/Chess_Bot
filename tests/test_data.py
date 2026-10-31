@@ -17,7 +17,7 @@ import pytest
 import zstandard
 
 from data import download
-from data.annotate import annotate, load_labels
+from data.annotate import annotate, load_labels, usable_cpus
 from data.dataset import PositionDataset, fixed_split, load_datasets, near_win_report, split_by_game
 from data.sample_positions import (PHASES, PhaseRule, game_ending, nonpawn_material, phase_quotas, position_key,
                                    sample_positions, tag_phase)
@@ -251,6 +251,11 @@ def test_position_dataset_records(tmp_path):
 
 
 # ------------------------------------------------------------- labeling ----
+
+def test_usable_cpus_is_within_the_host_count():
+    import os
+    assert 1 <= usable_cpus() <= (os.cpu_count() or 1)
+
 
 try:
     from engine.stockfish import find_stockfish

@@ -279,9 +279,11 @@ whichever clone it is opened in.
    `$2 + (L4 hours left × 0.59) + (4 × CPU_RATE)`. Top up first if it doesn't. (The L4
    pod's watchdog assumed it was the only pod billing.)
 2. **Deploy.** Pods, Deploy, CPU. Datacenter **EU-RO-1** with the `chess-ai` network
-   volume attached at `/workspace`; the largest vCPU count offered (32 or more);
-   on-demand. The default CPU template is fine if it gives a terminal (JupyterLab or the
-   web terminal).
+   volume attached at `/workspace`; **16 vCPU** (Oct 31: sampling is single-threaded and
+   takes most of the time, so more vCPUs mostly sit idle; 16 labels 500k in ~45-60 min);
+   on-demand. Container disk **20 GB** (packages; 5 GB is tight). The template needs
+   Python 3.10+: prefer an Ubuntu 22.04 or 24.04 one; with Ubuntu 20.04 (Python 3.8)
+   check step 4's version line.
 3. **Watchdog: a fixed 4-hour cap** (the whole job should take ~2-3 h). In the pod
    terminal:
 
@@ -295,6 +297,7 @@ whichever clone it is opened in.
 4. **Code and packages.** The clone is made once; later sessions only update it.
 
    ```
+   python3 --version                    # must be 3.10+; if not, `ls /usr/bin/python3.1*` and use that python
    apt-get update && apt-get install -y tmux git
    cd /workspace
    [ -d Chess_Bot_data ] || git clone https://github.com/derekhe99/Chess_Bot.git Chess_Bot_data
@@ -304,7 +307,7 @@ whichever clone it is opened in.
    python3 -m pip install -q torch --index-url https://download.pytorch.org/whl/cpu
    python3 -m pip install -q -r requirements.txt jupyter nbconvert
    python3 -m pytest tests/test_data.py -q        # downloads Stockfish into this clone on first use
-   nproc                                         # the number of labeling workers
+   python3 -c "from data.annotate import usable_cpus; print(usable_cpus())"   # labeling workers: should match the vCPUs you chose
    ```
 
    The CPU-only torch (~200 MB) avoids the 2-3 GB GPU build; the dataset code imports
@@ -329,7 +332,7 @@ whichever clone it is opened in.
    printed or saved until the sample is complete; it then writes `positions.parquet`),
    then labels on every core (~20-40 min on 32 vCPUs). Progress while labeling:
    `ls /workspace/chess-ai/data/processed/sft_scaled_d12_n500000/parts | wc -l`
-   (chunks of 250 positions; 2,000 = done).
+   (chunks of 250 positions; 2,000 = done). Labeling time is ~10 CPU-h / vCPUs.
 7. **Interrupted** (watchdog, closed session): run the same command again. A finished
    sample is reused and finished chunks are kept; only an unfinished sample is redone.
 8. **Done:** send Claude the printed output (as in step 5, `01_scaled_500k.ipynb`), then
