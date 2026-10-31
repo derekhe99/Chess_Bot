@@ -9,7 +9,7 @@ started from, other references become lines, and the PNG is written.
 import csv
 
 from eval.anchors import RESULTS_COLUMNS
-from eval.plots import elo_points, plot_elo_vs_compute
+from eval.plots import elo_points, plot_elo_vs_compute, run_kind
 
 SFT = "structured_masked_nall_e10_s0"
 RL = "llm_rl/structured_masked_sft25000_s0"
@@ -55,5 +55,28 @@ def test_plot_writes_a_png(tmp_path):
     path = tmp_path / "results.csv"
     write_results(path)
     out = tmp_path / "out" / "elo_vs_compute.png"
+    plot_elo_vs_compute(path, out)
+    assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+AZ = "alphazero/az_b6c64_s0"
+
+
+def test_alphazero_run_is_its_own_series_from_zero_and_not_joined_to_sft(tmp_path):
+    path = tmp_path / "results.csv"
+    write_results(path)
+    note = "pure self-play AlphaZero, MCTS 100 sims/move"
+    with open(path, "a", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=RESULTS_COLUMNS)
+        for rnd, hours, elo in [(10, 3.0, 610.0), (5, 1.2, 480.0)]:
+            w.writerow({k: "" for k in RESULTS_COLUMNS} | dict(
+                name=f"az_b6c64_s0@r{rnd}", role="model", rating=elo, ci_low=elo - 60, ci_high=elo + 60,
+                run=AZ, step=rnd, train_gpu_hours=hours, label_cpu_hours=0, note=note))
+    runs, starts, _ = elo_points(path)
+    assert list(runs) == [SFT, RL, AZ]
+    assert [(p["label"], p["x"]) for p in runs[AZ]] == [("r5", 1.2), ("r10", 3.0)]   # sorted, own hours (from 0)
+    assert AZ not in starts                                                       # not joined to an SFT point
+    assert [run_kind(r) for r in runs] == ["SFT", "RL", "AlphaZero"]
+    out = tmp_path / "elo_vs_compute.png"
     plot_elo_vs_compute(path, out)
     assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"

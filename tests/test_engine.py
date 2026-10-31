@@ -220,6 +220,65 @@ def test_planes_side_to_move_castling_and_ep():
     assert E.to_planes(b)[12].sum() == 0  # black to move
 
 
+# ------------------------------------------- side-to-move flipping ----
+# AlphaZero's network sees every position from the side to move (Step 9 (c)).
+
+# Positions with castling rights, a legal en passant capture, and promotions, Black to move.
+FLIP_FENS = [
+    "r3k2r/pppq1ppp/2n1bn2/3pp3/3PP3/2N1BN2/PPPQ1PPP/R3K2R b KQkq - 4 8",
+    "rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 3",
+    "8/8/8/8/8/2k5/1p4K1/8 b - - 0 60",
+    "4k3/8/8/8/8/8/p1p5/1N2K3 b - - 0 70",
+]
+
+
+def test_mirror_table_is_a_permutation_and_its_own_inverse():
+    mi = M.MIRROR_INDEX
+    assert mi.shape == (M.NUM_MOVES,) and sorted(mi.tolist()) == list(range(M.NUM_MOVES))
+    assert (mi[mi] == np.arange(M.NUM_MOVES)).all()
+
+
+@pytest.mark.parametrize("move,mirrored", [("e2e4", "e7e5"), ("g1f3", "g8f6"), ("e1g1", "e8g8"),
+                                           ("e1c1", "e8c8"), ("a7a8q", "a2a1q"), ("b2c1n", "b7c8n")])
+def test_mirror_move_flips_ranks_and_keeps_promotion(move, mirrored):
+    assert M.mirror_move(move) == mirrored and M.mirror_move(mirrored) == move
+    assert M.MIRROR_INDEX[M.move_to_index(move)] == M.move_to_index(mirrored)
+
+
+def test_flipping_twice_round_trips():
+    for fen in FLIP_FENS + [chess.STARTING_FEN]:
+        b = chess.Board(fen)
+        assert b.mirror().mirror().fen() == b.fen()
+        assert E.stm_board(b).turn == chess.WHITE                 # the mover is always "White"
+    w = chess.Board()
+    assert E.stm_board(w) is w                                    # White to move: nothing changes
+
+
+def test_mirrored_legal_mask_matches_python_chess_on_the_mirrored_board():
+    boards = [chess.Board(f) for f in FLIP_FENS] + list(random_positions(n_games=10, seed=3))
+    checked_black = 0
+    for b in boards:
+        mirrored = b.mirror()
+        assert (M.legal_mask(b)[M.MIRROR_INDEX] == M.legal_mask(mirrored)).all()
+        expected = M.legal_mask(E.stm_board(b))
+        assert (M.stm_legal_mask(b) == expected).all()
+        for mv in B.legal_moves(b):                               # each real move lands on a legal stm index
+            assert expected[M.stm_index(mv, b.turn == chess.WHITE)]
+        checked_black += b.turn == chess.BLACK
+    assert checked_black > 100
+
+
+def test_stm_planes_see_black_as_white():
+    b = chess.Board(FLIP_FENS[1])                                 # Black to move, en passant d4xe3 legal
+    p = E.to_planes_stm(b)
+    assert (p == E.to_planes(b.mirror())).all()
+    assert p[12].all()                                            # side-to-move plane: always the mover
+    assert p[17, 5, 4] == 1 and p[17].sum() == 1                  # ep target e3 is seen as e6
+    assert p[0].sum() == 8 and p[0, 4, 3] == 1                    # Black's pawns are now "my" pawns; d4 -> d5
+    w = chess.Board()
+    assert (E.to_planes_stm(w) == E.to_planes(w)).all()
+
+
 # ----------------------------------------------------------- stockfish ----
 
 try:

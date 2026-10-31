@@ -46,6 +46,7 @@ What to decide per job:
 |---|---|---|
 | Eval SFT checkpoints | `notebooks/02_train_sft.ipynb` | `RUN_TRAINING = False`, `EVAL_STEPS`, `OPPONENTS` |
 | LLM self-play RL | `notebooks/04_train_llm_rl.ipynb` | `SMOKE_TEST` (True = 2 tiny rounds, no eval), `RUN_TRAINING`, `EVAL_ROUNDS` |
+| AlphaZero (Step 9) | `notebooks/05_train_alphazero.ipynb` | `SMOKE_TEST` (True = 2 tiny rounds + timing probe, no eval), `RUN_TRAINING`, `EVAL_ROUNDS`, `OPPONENTS`; settings and the GPU-hour cap in `configs/alphazero.yaml` (section F) |
 | Other (build dataset, etc.) | its own notebook | its own parameters cell |
 
 Notebook parameters live in the notebook, and code is never edited on the pod, so change
@@ -169,3 +170,85 @@ between sessions.
 
 Rule of thumb: rerunning the same notebook with the same settings is always the recovery.
 Nothing already finished is redone.
+
+## F. AlphaZero (Step 9): smoke run, then stage 1
+
+### One copy of the code per volume
+
+`/workspace/Chess_Bot` is on the network volume, so every pod attached to it shares that one
+folder. Checking out a branch there changes the code under any job another pod is running
+(modules that load late, like an eval cell's imports, would pick up the new branch). Run
+AlphaZero only when no other pod is running a job from it. To train AlphaZero alongside an
+LLM job later, first decide with Claude whether AlphaZero gets its own clone (e.g.
+`/workspace/Chess_Bot_az`); that needs a one-line change to notebook 05's `REPO_DIR`.
+
+### Smoke run (~10-20 minutes, well under $1)
+
+1. **Pod.** Reuse a pod that is up and idle (`tmux ls` lists no running job, `nvidia-smi`
+   shows no process), or start one (section B). It must be an L4.
+2. **Watchdog** (section A, Part 1) with your current balance.
+3. **Code** (nothing else may be running from this folder):
+
+   ```
+   cd /workspace/Chess_Bot
+   git fetch && git checkout step-9-alphazero && git reset --hard origin/step-9-alphazero
+   git log -1 --oneline
+   pip install -q -r requirements.txt
+   python -m pytest tests/ -q          # ~1 min; Stockfish tests run here, the Qwen download test skips
+   ```
+
+4. **Run notebook 05 headless** with `SMOKE_TEST = True` (the smoke run was done Oct 31 and
+   the committed notebook now says `False`; set it back on the laptop, commit, push, pull to
+   smoke-test again, e.g. after a code change):
+
+   ```
+   tmux new -s job
+   cd /workspace/Chess_Bot
+   NOTEBOOK=notebooks/05_train_alphazero.ipynb
+   jupyter nbconvert --to notebook --execute $NOTEBOOK \
+     --output-dir /workspace/chess-ai/logs \
+     --output "$(basename $NOTEBOOK .ipynb)_$(date +%m%d_%H%M).ipynb" \
+     --ExecutePreprocessor.timeout=-1
+   ```
+
+   It plays 2 rounds of 8 games (8 simulations, 40-ply cap) into
+   `checkpoints/alphazero/az_b6c64_s0_smoke`, then times one move of 128 games at 100
+   simulations and one update step at batch 256, with a network of the real size. No eval,
+   no plot, nothing written to `results.csv`.
+
+5. **Send Claude the printed output.** This prints every cell's text output from the newest
+   executed copy:
+
+   ```
+   python - <<'PY'
+   import glob, json
+   path = sorted(glob.glob("/workspace/chess-ai/logs/05_train_alphazero_*.ipynb"))[-1]
+   print(path)
+   for c in json.load(open(path))["cells"]:
+       for o in c.get("outputs", []):
+           text = "".join(o.get("text", "")) or "".join(o.get("data", {}).get("text/plain", ""))
+           print(text)
+   PY
+   ```
+
+   The numbers that matter: GPU / CPU / cores; seconds per round (self-play vs. update); the
+   probe's seconds per move of 128 games and milliseconds per update step; the projected
+   rounds in 9 GPU-h; peak GPU memory. An error anywhere is also worth sending as is.
+
+6. **Stop the pod** if nothing else is planned (section C).
+
+### After the smoke run: settings, then stage 1
+
+Settings confirmed Oct 31 (plan Sec 5 item 4): the provisional defaults with 50 simulations
+per move, and notebook 05 committed with `SMOKE_TEST = False`. Stage 1 on the pod: steps 1-3
+above (with the stage-1 `BAL` below), then step 4's command; `az_b6c64_s0_smoke` is separate,
+so the real run (`az_b6c64_s0`) starts fresh. Watch it with
+`watch -n 60 'column -s, -t < /workspace/chess-ai/checkpoints/alphazero/az_b6c64_s0/az_log.csv | tail -8'`.
+
+Budget for stage 1 (`max_gpu_hours: 9`): about 9 h of training + up to one round past the
+cap + evals (up to 4 checkpoints x 60 games; plan 1-3 h, as search makes AlphaZero slower
+per move than the LLM) + setup. At $0.59/h that is roughly 12-13 h, so `BAL` of about $10 or
+more (the watchdog keeps a 10% margin above the $2 floor). If the watchdog fires before the
+evals finish, rerun the same notebook (section E, outcome B). Raising the cap to 18 (stage
+2) is a config change + push + rerun: the run resumes.
+
