@@ -1,2 +1,7 @@
-# Network size, MCTS sims, games/round, rounds.
-# TODO: fill in during Step 9.
+# AlphaZero arm (plan Step 9). Every value here is PROVISIONAL until Derek confirms it
+# after the smoke run (plan Sec 5 item 4). Training settings are added in Step 9 (e).
+
+# Network size (model/az_net.py NetConfig): residual blocks x channels.
+net:
+  blocks: 6
+  channels: 64
