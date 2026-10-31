@@ -92,10 +92,10 @@ Rules:
   merge. The full implementation spec is plan Step 9 (a)-(h); build in that order. First
   commit: `results.csv` saves merge under a lock file instead of overwriting (two pods can
   share the volume); (a) done Oct 21. Batched self-play lives in `search/mcts.py` (Oct 30,
-  Derek), so `search/selfplay.py` is untouched; (b) MCTS done Oct 30. Cap staged 9 / 18 /
-  30 GPU-h, extended by resuming. Hyperparameters are provisional until Derek confirms them
-  after the smoke run (plan Sec 5 item 4). Can train on a second pod; each watchdog then uses
-  the combined rate.
+  Derek), so `search/selfplay.py` is untouched; (b) MCTS and (c) flipping done Oct 30. Cap
+  staged 9 / 18 / 30 GPU-h, extended by resuming. Hyperparameters are provisional until Derek
+  confirms them after the smoke run (plan Sec 5 item 4). Can train on a second pod; each
+  watchdog then uses the combined rate.
 
 ## How code runs (one source of truth per thing)
 

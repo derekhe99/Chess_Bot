@@ -14,8 +14,10 @@ How the 1968 comes about:
   (22 from-to pairs per side x 2 sides) x 4 pieces (q, r, b, n).
 
 Moves are in the absolute board frame (White's view) -- nothing is flipped
-for the side to move. If a later encoding flips the board for Black, it
-must flip moves with it.
+for the side to move. AlphaZero (Step 9) flips the board for Black
+(``board.mirror()``); ``mirror_move`` / ``MIRROR_INDEX`` flip moves with it,
+and ``stm_index`` / ``stm_legal_mask`` give a move's index and the legal mask
+in that side-to-move frame. The LLM never flips.
 
 FROZEN: the order below defines what every policy-output index means. If it
 ever changes, every trained checkpoint silently becomes garbage. The test
@@ -94,3 +96,31 @@ def legal_mask(board: chess.Board) -> np.ndarray:
     mask = np.zeros(NUM_MOVES, dtype=bool)
     mask[legal_indices(board)] = True
     return mask
+
+
+# ------------------------------------------------- side-to-move frame ----
+# AlphaZero's network always sees the board from the side to move: when Black
+# moves, the board is mirrored (ranks flipped, colors swapped), so Black's
+# moves must be mirrored too before they meet the network's policy output.
+
+def mirror_move(move: str) -> str:
+    """The same move with ranks flipped (rank r -> 7 - r), e.g. e7e5 -> e2e4; promotion piece kept."""
+    m = chess.Move.from_uci(move)
+    flipped = chess.Move(chess.square_mirror(m.from_square), chess.square_mirror(m.to_square), m.promotion)
+    return flipped.uci()
+
+
+# MIRROR_INDEX[i] = index of the mirror of move i. A permutation, and its own inverse.
+MIRROR_INDEX: np.ndarray = np.array([MOVE_TO_INDEX[mirror_move(m)] for m in MOVES], dtype=np.int64)
+
+
+def stm_index(move: str, white_to_move: bool) -> int:
+    """Index of a real (absolute-frame) move in the side-to-move frame the network uses."""
+    i = move_to_index(move)
+    return i if white_to_move else int(MIRROR_INDEX[i])
+
+
+def stm_legal_mask(board: chess.Board) -> np.ndarray:
+    """legal_mask in the side-to-move frame: equals legal_mask(board.mirror()) when Black moves."""
+    mask = legal_mask(board)
+    return mask if board.turn == chess.WHITE else mask[MIRROR_INDEX]

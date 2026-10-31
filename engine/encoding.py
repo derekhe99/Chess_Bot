@@ -99,7 +99,8 @@ _PIECE_ORDER = (chess.PAWN, chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN,
 #   17    en passant target square (one-hot, only if a capture is legal)
 #   18    halfmove clock / 100 (constant plane; how close the 50-move rule is)
 # Cell [plane, r, f] is rank r+1, file f (a=0) -- absolute frame, not flipped
-# for the side to move, matching engine/moves.py.
+# for the side to move, matching engine/moves.py. AlphaZero uses to_planes_stm
+# (below), which flips the board first when Black is to move.
 # No move-history planes (AlphaZero used 8 past positions); skipped for the
 # small compute budget -- add later if the CNN needs repetition awareness.
 NUM_PLANES = 19
@@ -132,3 +133,26 @@ def to_planes(board: chess.Board) -> np.ndarray:
 
     planes[18] = min(board.halfmove_clock, 100) / 100.0
     return planes
+
+
+
+# ---------------------------------------------- side-to-move frame ----
+# AlphaZero (Step 9) shows its network every position from the side to move:
+# when Black moves, the board is mirrored first (ranks flipped, colors swapped,
+# castling rights and en passant square flipped, clocks kept), so "my pieces"
+# are always planes 0-5 moving up the board. One network then learns one game
+# instead of two mirror-image ones. Moves flip with it (engine/moves.py
+# mirror_move / stm_index / stm_legal_mask). The LLM arms never flip.
+
+def stm_board(board: chess.Board) -> chess.Board:
+    """The position as the side to move sees it: ``board`` itself if White moves, else ``board.mirror()``.
+
+    The mirror drops the move history (it doesn't affect the planes); the
+    original board stays the one the game and the search play on.
+    """
+    return board if board.turn == chess.WHITE else board.mirror()
+
+
+def to_planes_stm(board: chess.Board) -> np.ndarray:
+    """to_planes in the side-to-move frame (plane 12 is then always 1: the mover is 'White')."""
+    return to_planes(stm_board(board))
