@@ -238,3 +238,62 @@ def csv_rows(path):
     with open(path, newline="") as f:
         for r in csv.DictReader(f):
             yield {k: (int(v) if v.lstrip("-").isdigit() else v) for k, v in r.items()}
+
+
+# ------------------------------------------------------- (f) eval ----
+from eval.anchors import GreedyAgent, RandomAgent, ResultsTable
+from eval.match import evaluate_agent, play_game
+from eval.plots import elo_points
+from train.az_train import AlphaZeroAgent, eval_rounds, load_agent
+
+
+def fake_run(tmp_path, rounds, cap_rounds=()):
+    """A run folder with round_NNNN/ folders for ``rounds`` and the cap's kept_rounds.json."""
+    run = tmp_path / "run"
+    for r in rounds:
+        (run / "checkpoints" / f"round_{r:04d}").mkdir(parents=True)
+    if cap_rounds:
+        (run / "kept_rounds.json").write_text(json.dumps(sorted(cap_rounds)))
+    return run
+
+
+def test_eval_rounds_picks_up_to_four_per_stage_including_each_stages_end(tmp_path):
+    # stage 1 stopped by the cap at round 23, stage 2 at 41; round 47 is the stray latest round
+    run = fake_run(tmp_path, [5, 10, 15, 20, 23, 25, 30, 35, 40, 41, 45, 47], cap_rounds=[23, 41])
+    assert eval_rounds(run, 5) == [5, 10, 20, 23, 25, 30, 40, 41, 45]
+    # no cap stop yet: the regular kept checkpoints, evenly spaced, not the stray latest round
+    run2 = fake_run(tmp_path / "x", [5, 10, 15, 20, 25, 30, 33])
+    assert eval_rounds(run2, 5) == [5, 15, 20, 30]
+
+
+def test_agent_plays_legal_games_without_noise(evaluator):
+    agent = AlphaZeroAgent(evaluator.net, MCTSConfig(simulations=8), "az_test", "cpu")
+    rec = play_game(agent, RandomAgent(seed=1), max_plies=30)
+    assert rec.termination != "illegal_move" and sum(rec.illegal_attempts.values()) == 0
+    b = chess.Board(FENS[1])
+    assert agent.select_move(b) == agent.select_move(b)                       # eval search is deterministic
+
+
+def test_checkpoint_rated_into_results_csv_and_plotted(tmp_path):
+    run_dir = tmp_path / "checkpoints" / "alphazero" / "az_b1c8_s0"
+    cfg = tiny_cfg()
+    train(cfg, TINY_NET, TINY_MCTS, run_dir, device="cpu", max_rounds=2, log=lambda *_: None)
+    rnd = eval_rounds(run_dir, cfg.checkpoint_every)[-1]
+    name = f"az_b1c8_s0@r{rnd}"
+    agent = load_agent(run_dir / "checkpoints" / f"round_{rnd:04d}", TINY_MCTS, name, "cpu")
+    results = ResultsTable(tmp_path / "results.csv")
+
+    def save(est, recs):
+        results.log_model(est, recs, run="alphazero/az_b1c8_s0", step=rnd, seed=cfg.seed,
+                          train_gpu_hours=gpu_hours_at(run_dir, rnd), label_cpu_hours=0.0, gpu="cpu",
+                          note=f"pure self-play AlphaZero, MCTS {TINY_MCTS.simulations} sims/move")
+        results.save()
+
+    evaluate_agent(agent, {"random": RandomAgent(seed=2), "greedy": GreedyAgent(seed=3)},
+                   {"random": 525.0, "greedy": 641.0}, n_games=4, batch_games=2, on_batch=save,
+                   n_boot=20, verbose=False, max_plies=30)
+    row = ResultsTable(tmp_path / "results.csv").rows[name]
+    assert row["role"] == "model" and row["games"] == "8" and float(row["sec_per_move"]) > 0
+    assert row["run"] == "alphazero/az_b1c8_s0" and float(row["label_cpu_hours"]) == 0.0
+    runs, _, _ = elo_points(tmp_path / "results.csv")
+    assert [p["label"] for p in runs["alphazero/az_b1c8_s0"]] == [f"r{rnd}"]

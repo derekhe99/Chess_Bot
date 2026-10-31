@@ -40,6 +40,8 @@ Main pieces:
 - update          -- K minibatch steps; returns mean losses + policy entropy
 - train           -- the resumable round loop; writes az_log.csv
 - list_checkpoints / load_checkpoint / gpu_hours_at -- for evaluation into results.csv
+- AlphaZeroAgent / load_agent -- a checkpoint as an eval player (MCTS, no noise, most-visited)
+- eval_rounds     -- which kept checkpoints to rate: up to 4 per cap stage, each stage's last included
 """
 from __future__ import annotations
 
@@ -63,7 +65,7 @@ from engine import board as B
 from engine.encoding import NUM_PLANES, stm_board, to_planes
 from engine.moves import NUM_MOVES, stm_index
 from model.az_net import AZEvaluator, AZNet, NetConfig
-from search.mcts import MCTSConfig, play_games
+from search.mcts import MCTSConfig, play_games, search_move
 from search.selfplay import SelfPlayGame
 
 MAX_LEGAL = 256      # chess allows at most 218 legal moves; the buffer pads to this width
@@ -479,3 +481,56 @@ def gpu_hours_at(run_dir: str | Path, rnd: int) -> float:
             if int(r["round"]) == rnd:
                 return float(r["train_gpu_hours"])
     raise ValueError(f"no az_log.csv row for round {rnd}")
+
+
+# ------------------------------------------------------------- eval ----
+
+class AlphaZeroAgent:
+    """An eval player (eval.match.Agent): searches each position, no noise, plays the most-visited move.
+
+    Its search budget (``mcts_cfg.simulations``) is its inference cost: it shows up in
+    the eval games' seconds per move, and so in results.csv's sec_per_move.
+    """
+
+    def __init__(self, net: AZNet, mcts_cfg: MCTSConfig, name: str, device: str | torch.device | None = None):
+        self.name = name
+        self.mcts_cfg = mcts_cfg
+        self.evaluator = AZEvaluator(net, device)
+
+    def select_move(self, board: chess.Board) -> str:
+        """The board is the match's copy with its move history, so the search sees repetitions."""
+        return search_move(board, self.evaluator, self.mcts_cfg)
+
+
+def load_agent(round_dir: str | Path, mcts_cfg: MCTSConfig, name: str,
+               device: str | torch.device | None = None) -> AlphaZeroAgent:
+    """A saved round as an eval player."""
+    net = load_checkpoint(round_dir, device)
+    return AlphaZeroAgent(net, mcts_cfg, name, next(net.parameters()).device)
+
+
+def _spread(rounds: list[int], k: int = 4) -> list[int]:
+    """Up to k of ``rounds``, evenly spaced, first and last included."""
+    if len(rounds) <= k:
+        return list(rounds)
+    return sorted({rounds[round(i * (len(rounds) - 1) / (k - 1))] for i in range(k)})
+
+
+def eval_rounds(run_dir: str | Path, checkpoint_every: int, per_stage: int = 4) -> list[int]:
+    """Kept checkpoints to rate: up to ``per_stage`` per cap stage, evenly spaced, each stage's last included.
+
+    A stage ends at a round the cap stopped at (kept_rounds.json). Rounds after the last
+    cap stop (a run still going, or stopped by hand) form an open stage, rated from its
+    regular kept checkpoints (multiples of checkpoint_every) -- not the stray latest round.
+    """
+    run_dir = Path(run_dir)
+    saved = [r for r, _ in list_checkpoints(run_dir)]
+    stage_ends = sorted(r for r in _kept_by_cap(run_dir) if r in saved)
+    out, start = [], 0
+    for end in stage_ends:
+        stage = [r for r in saved if start < r <= end and (r % checkpoint_every == 0 or r == end)]
+        out += _spread(stage, per_stage)
+        start = end
+    open_stage = [r for r in saved if r > start and r % checkpoint_every == 0]
+    out += _spread(open_stage, per_stage)
+    return sorted(set(out))

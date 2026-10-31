@@ -2,11 +2,14 @@
 
 Intent: after every training run, redraw one picture showing where each run's
 checkpoints land. x = total training GPU-hours (an RL run's points include the
-GPU-hours of the SFT checkpoint it started from), y = Elo with its 95% CI. Each
-run keeps one color, in a fixed order, so adding a run never repaints the others.
+GPU-hours of the SFT checkpoint it started from; an AlphaZero run starts from
+nothing, at 0), y = Elo with its 95% CI. Each run keeps one color, in a fixed
+order, so adding a run never repaints the others.
 
 What it reads (eval.anchors.RESULTS_COLUMNS):
-- model rows: one point each, grouped by ``run``, ordered by ``train_gpu_hours``.
+- model rows: one point each, grouped by ``run``, ordered by ``train_gpu_hours``. The
+  run's folder prefix says its kind (run_kind): ``llm_rl/`` = RL, ``alphazero/`` =
+  AlphaZero, anything else = SFT.
 - reference rows whose spec is an SFT checkpoint (e.g. step_20000): drawn as a hollow
   marker on their run. Their GPU-hours aren't stored, so they're interpolated by step
   from that run's model rows.
@@ -39,8 +42,17 @@ def _num(x) -> float | None:
         return None
 
 
+def run_kind(run: str) -> str:
+    """'RL', 'AlphaZero' or 'SFT', from the run's folder prefix in results.csv."""
+    if run.startswith("llm_rl/"):
+        return "RL"
+    if run.startswith("alphazero/"):
+        return "AlphaZero"
+    return "SFT"
+
+
 def _label(run: str, step: float) -> str:
-    return f"r{step:g}" if run.startswith("llm_rl/") else f"{step / 1000:g}k"
+    return f"{step / 1000:g}k" if run_kind(run) == "SFT" else f"r{step:g}"   # SFT steps vs. RL / AlphaZero rounds
 
 
 def elo_points(results_path: str | Path) -> tuple[dict[str, list[dict]], dict[str, tuple], list[dict]]:
@@ -100,7 +112,7 @@ def plot_elo_vs_compute(results_path: str | Path, out_path: str | Path | None = 
     lows, highs, xmax = [], [], 1.0
     for i, (run, pts) in enumerate(runs.items()):
         color = COLORS[i % len(COLORS)]
-        kind = "RL" if run.startswith("llm_rl/") else "SFT"
+        kind = run_kind(run)
         xs, ys = [p["x"] for p in pts], [p["y"] for p in pts]
         ax.plot(xs, ys, color=color, lw=2, label=f"{kind}: {run.split('/')[-1]}", zorder=2)
         if run in starts:
@@ -128,7 +140,7 @@ def plot_elo_vs_compute(results_path: str | Path, out_path: str | Path | None = 
     ys = [lo, hi] + [l["y"] for l in shown]
     ax.set_ylim(min(ys) - 10, max(ys) + 25)
     ax.set_xlim(0, xmax * 1.22)
-    ax.set_xlabel("Total training GPU-hours (SFT + RL)", color=INK2)
+    ax.set_xlabel("Total training GPU-hours (SFT + RL; AlphaZero from 0)", color=INK2)
     ax.set_ylabel("Elo (95% CI)", color=INK2)
     ax.set_title(title, loc="left", fontsize=12, color=INK)
     ax.grid(axis="y", color=GRID, lw=0.8)
