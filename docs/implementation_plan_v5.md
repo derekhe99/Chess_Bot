@@ -16,6 +16,9 @@ Derek: a per-game file behind `results.csv`; re-rate 10 headline checkpoints; a
 head-to-head of each arm's best-rated checkpoint at 40 games per pair; 500k positions
 first. CNN size: start at 6 × 64. New Sec 4.1 says what can run in parallel and how.
 Step numbers are labels, not the running order (Sec 4).
+Later the same day: Step 13's small code prep runs before Step 12's build, so the 500k
+labeling (the long pole) runs while Step 12 is built (Derek, Oct 31; Sec 4). Step 16's
+config is set (cap 18).
 
 ---
 
@@ -188,7 +191,9 @@ checkpoint they wrap.
 Each step ends with a **gate**. Order from here:
 **Step 9 no-search evals → Step 12 → Step 13 → Step 14 → Step 15 → Step 11**, with
 **Step 16** run in the background whenever a pod is free. Several pieces overlap; Sec
-4.1 says which.
+4.1 says which. **Build order (Derek, Oct 31):** Step 13's code prep (game count, nested
+500k sample, chunked labeling) comes before Step 12's build, so labeling starts on a
+CPU-only pod while Step 12 is written; everything else follows the order above.
 
 **Step numbers are labels, not the running order.** Steps that exist keep their numbers,
 so references in this plan, CLAUDE.md, notes and git history ("Step 9 gate met") stay
@@ -257,7 +262,7 @@ flat (647–714). Code tags `run1-default`, `run2-sfend`, `run3-curric`, `run4-l
 r53 729 [696, 762]; 0.09 s/move. It rarely loses but rarely converts (r53: 1W 18D 1L vs.
 `greedy`, 1W 16D 3L vs. `step_20000`). Gate met.
 
-### Step 9, finishing: AlphaZero no-search evals
+### Step 9, finishing: AlphaZero no-search evals — *done (Oct 31)*
 
 Built Oct 31 (`PolicyAgent`, notebook 05 `EVAL_NO_SEARCH = True`). Rate the kept stage-1
 checkpoints without search as their own series (`<run>_nosearch@rN`), at the same
@@ -412,6 +417,9 @@ alongside another job it needs its own repo clone and watchdog budgeting (Sec 1)
 3 (30 GPU-h) is decided after stage 2. Retuning AlphaZero (parallel self-play across
 CPU workers, a bigger network, more simulations) is parked: it would start a new run,
 and stage 1–2 is the clean baseline.
+
+*Set up (Oct 31):* `configs/alphazero.yaml` has `max_gpu_hours: 18`; notebook 05 evaluates
+both ways (`EVAL_NO_SEARCH = True`); launch per `docs/runpod_runbook.md` section F (stage 2).
 
 *Gate:* the stage-2 checkpoints rated both ways; it joins the head-to-head.
 

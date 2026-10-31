@@ -12,7 +12,7 @@ each decision):
 **Implementation plan** (the *what* and *how*: the spec for scope, design, and
 execution order):
 
-@docs/implementation_plan_v4.md
+@docs/implementation_plan_v5.md
 
 `docs/jobs_to_be_done.md` is a third view of the same plan (what each step delivers);
 regenerate it when the plan changes.
@@ -33,7 +33,7 @@ Rules:
 - **Deviations and open items are discussed first.** Any change that departs from the
   plan, adds scope, skips a gate, or settles an open item: stop, flag it to Derek with
   options and trade-offs, and align with him. Don't decide unilaterally.
-- **Order after aligning**: update the current plan, `docs/implementation_plan_v4.md`
+- **Order after aligning**: update the current plan, `docs/implementation_plan_v5.md`
   (and the Status section below), first, then write the code. Small updates edit the
   current version in place; a new version only when Derek says so, with the old one
   archived outside the repo in `ChessAI/archive/`.
@@ -92,25 +92,27 @@ Rules:
   - Run 4 (Oct 25, Derek's call, a 4th run): run 3's config with learning rate 5e-5 (5x), the
     only change; `tag: curric120_lr5x`, branch `step-7-run4-lr5x` from `main`, tagged
     `run4-lr5x`. Result (Oct 31): Elo r5 689, r10 697, r15 697, r20 681 (16.56 total GPU-h) vs.
-    SFT 681: flat (H0). All 16 RL checkpoints (runs 1-4) sit at 647-714. After its evals: merge
-    into `main`, then `main` into `step-9-alphazero`.
-- Step 9 — stage 1 done, gate met (Oct 31, confirmed by Derek). AlphaZero on
-  `step-9-alphazero` (plan Step 9 (a)-(h), all built Oct 21-31): `search/mcts.py` (PUCT +
-  batched self-play), side-to-move flipping, `model/az_net.py`, `train/az_train.py`, notebook
-  05, runbook section F. Smoke run: search is CPU-bound (~5-CPU pod quota, GPU mostly idle), so
-  settings confirmed with 50 simulations per move (option B; parallel self-play held in
-  reserve). Stage 1 (`az_b6c64_s0`, 53 rounds, 9.16 GPU-h, stage-1 code tagged `az-stage1`):
-  Elo r5 653, r20 716, r40 722, r53 729: a real rise, mostly by ~4 GPU-h, level with the best
-  LLM checkpoints. Mostly draws vs. `greedy` and `step_20000`: it rarely loses but rarely
-  converts.
-  - Next (Derek, Oct 31), one step at a time: (1) no-search evals of the same checkpoints
-    (`az_..._nosearch`: how much of the Elo is search; code built Oct 31, notebook 05
-    `EVAL_NO_SEARCH`, to run on the pod with `RUN_TRAINING = False`); (2) stage 2: cap 18 (= the LLM SFT + RL
-    runs, 16.5-18.2), same opponents (`random`, `greedy`, `step_20000`; a stronger one only if a
-    checkpoint goes above ~900 or is `OFF SCALE`); (3) LLM + MCTS option A: play-time search on
-    SFT 25k at 0 and 16 simulations, on its own branch from `main`; option B (search in
-    training) decided after A. AlphaZero running alongside another job needs its own clone of
-    the repo on the volume (runbook section F).
+    SFT 681: flat (H0). All 16 RL checkpoints (runs 1-4) sit at 647-714. Merged into `main`
+    Oct 31 (with Step 9).
+- Step 9 — done (Oct 31). AlphaZero (`search/mcts.py`, flipping, `model/az_net.py`,
+  `train/az_train.py`, notebook 05, runbook section F; 50 simulations per move, search is
+  CPU-bound on the ~5-CPU pod). Stage 1 (`az_b6c64_s0`, 53 rounds, 9.16 GPU-h, code tag
+  `az-stage1`): r5 653, r20 716, r40 722, r53 729, level with the best LLM checkpoints; it
+  rarely loses but rarely converts. No-search evals: the network alone 567 -> 641, so search
+  adds ~+90 Elo at every checkpoint. Full detail in the archived plan v4.
+- Plan v5 (Oct 31) — current plan. Scale imitation for both architectures (CNN SFT, a new
+  arm, and LLM SFT on a 500k dataset), measure play-time search on each, keep AlphaZero as
+  the teacher-free comparison. Step numbers are labels, not the running order (plan Sec 4).
+  - Running order (Sec 4 / 4.1): Step 13's code prep first (small), so the 500k labeling runs
+    on a CPU-only pod while Step 12 (eval v2: `results/games.csv`, W/D/L, `eval/agents.py`
+    search switch, head-to-head) is built; then Step 12's 10 headline re-evals and first
+    head-to-head, LLM SFT 25k with 16-simulation search (Step 15), CNN SFT on 50k (Step 14);
+    then 500k training (Step 14) and search on those models (Step 15); Step 11 last.
+  - Step 16 (AlphaZero stage 2) runs in the background on a free pod: `max_gpu_hours: 18`
+    set Oct 31, resumes `az_b6c64_s0` from round 53, evals with and without search, same
+    opponents.
+  - Pods: one CPU-heavy job per pod; two pods at once means one repo clone per pod on the
+    volume and watchdogs on the combined rate (plan Sec 1, 4.1).
 
 ## How code runs (one source of truth per thing)
 
@@ -122,7 +124,8 @@ Rules:
    `runpodctl stop pod $RUNPOD_POD_ID`; `docs/runpod_runbook.md`, plan Sec 1).
    Always attach the network volume to the pod. `HF_TOKEN` is a pod environment variable.
 3. **Artifacts** — `artifact_root` in `configs/base.yaml` (`/workspace/chess-ai`):
-   `data/processed`, `checkpoints/{sft,llm_rl,alphazero}`, `results/results.csv`.
+   `data/processed`, `checkpoints/{sft,llm_rl,alphazero,cnn_sft}`, `results/results.csv`
+   (plus `results/games.csv`, one row per eval game, from plan v5 Step 12).
    Artifacts never go to git (`.gitignore` covers `results/`, checkpoints, `*.pt`,
    `*.parquet`, `stockfish/`). `results.csv` is the one file every chart reads; only
    `eval.anchors.ResultsTable` writes it.
