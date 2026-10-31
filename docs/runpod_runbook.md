@@ -56,7 +56,7 @@ Run it. Interactive (short jobs, you are watching): open the notebook in Jupyter
 Run All. Headless (long jobs, you will walk away): in tmux, change only `NOTEBOOK`:
 
 ```
-tmux new -s job
+tmux new -A -s job
 cd /workspace/Chess_Bot
 NOTEBOOK=notebooks/04_train_llm_rl.ipynb
 jupyter nbconvert --to notebook --execute $NOTEBOOK \
@@ -65,6 +65,9 @@ jupyter nbconvert --to notebook --execute $NOTEBOOK \
   --ExecutePreprocessor.timeout=-1
 ```
 
+- `tmux new -A -s job` opens the `job` session, attaching to it if it already exists (e.g. left over
+  from an earlier job), so it never fails with "duplicate session". Check the prompt is back (no job
+  still running in that window) before pasting the next command.
 - Detach: `Ctrl-b`, release both keys, then `d`. Type nothing else in the session (no
   `Ctrl-d`, `Ctrl-c`, or `exit`: they can end the job). Close the browser freely.
   Reattach: `tmux attach -t job`.
@@ -202,7 +205,7 @@ LLM job later, first decide with Claude whether AlphaZero gets its own clone (e.
    smoke-test again, e.g. after a code change):
 
    ```
-   tmux new -s job
+   tmux new -A -s job
    cd /workspace/Chess_Bot
    NOTEBOOK=notebooks/05_train_alphazero.ipynb
    jupyter nbconvert --to notebook --execute $NOTEBOOK \
@@ -251,4 +254,13 @@ per move than the LLM) + setup. At $0.59/h that is roughly 12-13 h, so `BAL` of 
 more (the watchdog keeps a 10% margin above the $2 floor). If the watchdog fires before the
 evals finish, rerun the same notebook (section E, outcome B). Raising the cap to 18 (stage
 2) is a config change + push + rerun: the run resumes.
+
+### Stage 2 (cap 18) and its evals (plan v5 Step 16)
+
+`configs/alphazero.yaml` says `max_gpu_hours: 18`; nothing else changes, so the same run
+(`az_b6c64_s0`) resumes from round 53. One notebook run does everything: training to ~18
+GPU-h (~9 more hours), then evals of up to 4 stage-2 checkpoints with and without search
+(stage 1's rated rows are skipped). Budget: ~9.2 h training + ~2-3 h evals (search ~1.5-2 h,
+no-search ~0.5 h) + setup, ~12-13 pod-hours: `BAL` of about $10 or more. Restart the
+watchdog with your current balance before launching: an older timer may fire mid-run.
 

@@ -41,6 +41,7 @@ Main pieces:
 - train           -- the resumable round loop; writes az_log.csv
 - list_checkpoints / load_checkpoint / gpu_hours_at -- for evaluation into results.csv
 - AlphaZeroAgent / load_agent -- a checkpoint as an eval player (MCTS, no noise, most-visited)
+- PolicyAgent / load_policy_agent -- the same network with no search: plays its policy's top legal move
 - eval_rounds     -- which kept checkpoints to rate: up to 4 per cap stage, each stage's last included
 """
 from __future__ import annotations
@@ -507,6 +508,30 @@ def load_agent(round_dir: str | Path, mcts_cfg: MCTSConfig, name: str,
     """A saved round as an eval player."""
     net = load_checkpoint(round_dir, device)
     return AlphaZeroAgent(net, mcts_cfg, name, next(net.parameters()).device)
+
+
+class PolicyAgent:
+    """The network alone, no search: plays the legal move its policy head rates highest.
+
+    Rated next to AlphaZeroAgent on the same checkpoints, the Elo gap is what search
+    adds to the same network (plan Step 9, "no-search evals"). One forward pass per
+    move, so its sec_per_move is the network's raw inference cost.
+    """
+
+    def __init__(self, net: AZNet, name: str, device: str | torch.device | None = None):
+        self.name = name
+        self.evaluator = AZEvaluator(net, device)
+
+    def select_move(self, board: chess.Board) -> str:
+        """The top-prior legal move (ties go to the first in sorted UCI order, so it's deterministic)."""
+        (priors, _), = self.evaluator.evaluate([board])
+        return max(sorted(priors), key=lambda m: priors[m])
+
+
+def load_policy_agent(round_dir: str | Path, name: str, device: str | torch.device | None = None) -> PolicyAgent:
+    """A saved round as a no-search eval player."""
+    net = load_checkpoint(round_dir, device)
+    return PolicyAgent(net, name, next(net.parameters()).device)
 
 
 def _spread(rounds: list[int], k: int = 4) -> list[int]:
