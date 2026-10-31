@@ -104,7 +104,8 @@ Rules:
   LLM checkpoints. Mostly draws vs. `greedy` and `step_20000`: it rarely loses but rarely
   converts.
   - Next (Derek, Oct 31), one step at a time: (1) no-search evals of the same checkpoints
-    (`az_..._nosearch`: how much of the Elo is search); (2) stage 2: cap 18 (= the LLM SFT + RL
+    (`az_..._nosearch`: how much of the Elo is search; code built Oct 31, notebook 05
+    `EVAL_NO_SEARCH`, to run on the pod with `RUN_TRAINING = False`); (2) stage 2: cap 18 (= the LLM SFT + RL
     runs, 16.5-18.2), same opponents (`random`, `greedy`, `step_20000`; a stronger one only if a
     checkpoint goes above ~900 or is `OFF SCALE`); (3) LLM + MCTS option A: play-time search on
     SFT 25k at 0 and 16 simulations, on its own branch from `main`; option B (search in

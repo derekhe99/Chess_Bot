@@ -297,3 +297,38 @@ def test_checkpoint_rated_into_results_csv_and_plotted(tmp_path):
     assert row["run"] == "alphazero/az_b1c8_s0" and float(row["label_cpu_hours"]) == 0.0
     runs, _, _ = elo_points(tmp_path / "results.csv")
     assert [p["label"] for p in runs["alphazero/az_b1c8_s0"]] == [f"r{rnd}"]
+
+
+# ------------------------------------------- no-search evals (Step 9) ----
+from train.az_train import PolicyAgent, load_policy_agent
+
+
+def test_policy_agent_plays_the_networks_top_move(evaluator):
+    agent = PolicyAgent(evaluator.net, "az_test_nosearch", "cpu")
+    for fen in FENS:
+        b = chess.Board(fen)
+        (priors, _), = evaluator.evaluate([b])
+        assert agent.select_move(b) == max(sorted(priors), key=lambda m: priors[m])
+    rec = play_game(agent, RandomAgent(seed=4), max_plies=40)
+    assert rec.termination != "illegal_move" and sum(rec.illegal_attempts.values()) == 0
+
+
+def test_search_and_no_search_rate_into_separate_rows(tmp_path):
+    run_dir = tmp_path / "checkpoints" / "alphazero" / "az_b1c8_s0"
+    cfg = tiny_cfg()
+    train(cfg, TINY_NET, TINY_MCTS, run_dir, device="cpu", max_rounds=2, log=lambda *_: None)
+    round_dir = run_dir / "checkpoints" / "round_0002"
+    results = ResultsTable(tmp_path / "results.csv")
+    opponents = {"random": RandomAgent(seed=2), "greedy": GreedyAgent(seed=3)}
+    fixed = {"random": 525.0, "greedy": 641.0}
+    for agent, run in [(load_agent(round_dir, TINY_MCTS, "az_b1c8_s0@r2", "cpu"), "alphazero/az_b1c8_s0"),
+                       (load_policy_agent(round_dir, "az_b1c8_s0_nosearch@r2", "cpu"), "alphazero/az_b1c8_s0_nosearch")]:
+        def save(est, recs, run=run):
+            results.log_model(est, recs, run=run, step=2, train_gpu_hours=gpu_hours_at(run_dir, 2), label_cpu_hours=0.0)
+            results.save()
+        evaluate_agent(agent, opponents, fixed, n_games=2, batch_games=2, on_batch=save, n_boot=20,
+                       verbose=False, max_plies=30)
+    rows = ResultsTable(tmp_path / "results.csv").rows
+    assert rows["az_b1c8_s0@r2"]["train_gpu_hours"] == rows["az_b1c8_s0_nosearch@r2"]["train_gpu_hours"]
+    runs, _, _ = elo_points(tmp_path / "results.csv")
+    assert set(runs) == {"alphazero/az_b1c8_s0", "alphazero/az_b1c8_s0_nosearch"}   # two series, same x
