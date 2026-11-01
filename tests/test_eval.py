@@ -372,6 +372,45 @@ def test_games_csv_gets_one_row_per_eval_game_with_its_ending(tmp_path):
         assert next(csv.reader(f)) == GAMES_COLUMNS
 
 
+def test_wdl_in_results_equals_the_games_behind_the_row(tmp_path):
+    path = tmp_path / "results.csv"
+    t = ResultsTable(path)
+    anchors = {"greedy": GreedyAgent(seed=1), "random": RandomAgent("random", seed=2)}
+    seen = []
+
+    def save(est, recs):
+        t.log_model(est, recs, dataset_size=500000)
+        t.save()
+        r = ResultsTable(path).rows["candidate"]
+        seen.append((int(r["wins"]) + int(r["draws"]) + int(r["losses"]), int(r["games"])))
+
+    evaluate_agent(RandomAgent("candidate", seed=3), anchors, {"greedy": 600.0, "random": 300.0},
+                   n_games=6, batch_games=2, on_batch=save, n_boot=20, verbose=False, max_plies=60)
+    assert seen == [(4, 4), (8, 8), (12, 12)]              # updated every batch, always adds up
+    t2 = ResultsTable(path)
+    row, games = t2.rows["candidate"], t2.games("candidate")
+    pts = [float(g["white_score"]) if g["white"] == "candidate" else 1 - float(g["white_score"]) for g in games]
+    assert (int(row["wins"]), int(row["draws"]), int(row["losses"])) == (pts.count(1.0), pts.count(0.5), pts.count(0.0))
+    assert row["dataset_size"] == "500000"
+
+
+def test_rows_from_before_step_12_load_with_blank_wdl(tmp_path):
+    path = tmp_path / "results.csv"
+    old_columns = [c for c in RESULTS_COLUMNS if c not in ("wins", "draws", "losses", "dataset_size")]
+    with open(path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=old_columns)
+        w.writeheader()
+        w.writerow({**{c: "" for c in old_columns}, "name": "old@5", "role": "model", "rating": "655",
+                    "ci_low": "621", "ci_high": "689", "games": "60"})
+    t = ResultsTable(path)
+    assert t.rows["old@5"]["wins"] == "" and t.rows["old@5"]["rating"] == "655"
+    t.log_model(_estimate("new@1"))
+    t.save()                                               # rewritten with the new columns, old row intact
+    with open(path, newline="") as f:
+        assert next(csv.reader(f)) == RESULTS_COLUMNS
+    assert ResultsTable(path).rows["old@5"]["rating"] == "655"
+
+
 def test_games_csv_records_a_checkmate():
     fools_mate = play_game(ScriptedAgent("w", ["f2f3", "g2g4"]), ScriptedAgent("b", ["e7e5", "d8h4"]))
     from eval.anchors import game_rows

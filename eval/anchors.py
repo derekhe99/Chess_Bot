@@ -215,9 +215,12 @@ def build_reference_agents(results: "ResultsTable", names, artifact_root: str | 
     return agents
 
 
-RESULTS_COLUMNS = ["name", "role", "rating", "ci_low", "ci_high", "games", "run", "step", "seed",
-                   "train_gpu_hours", "label_cpu_hours", "sec_per_move", "illegal_rate", "gpu",
-                   "stockfish_version", "date", "spec", "note"]
+# wins / draws / losses (plan v5 Step 12b): from the rated model's side, over the games behind its
+# row (games.csv), so they always add up to `games`; blank on rows rated before Step 12.
+# dataset_size (plan v5 Sec 2.2): labeled positions the run trained on; blank for self-play arms.
+RESULTS_COLUMNS = ["name", "role", "rating", "ci_low", "ci_high", "games", "wins", "draws", "losses",
+                   "run", "step", "seed", "train_gpu_hours", "label_cpu_hours", "dataset_size",
+                   "sec_per_move", "illegal_rate", "gpu", "stockfish_version", "date", "spec", "note"]
 ROLES = ("pin", "reference", "model")
 
 # results/games.csv (plan v5 Step 12a): one row per eval game.
@@ -348,8 +351,9 @@ class ResultsTable:
         """Write (or overwrite) a model's row from an Elo estimate and its eval games.
 
         Inputs: ``estimate`` -- a RatingEstimate (eval.elo); ``records`` -- the eval
-        GameRecords, used for sec_per_move and illegal_rate; ``fields`` -- any other
-        RESULTS_COLUMNS (run, step, seed, train_gpu_hours, label_cpu_hours, gpu, note).
+        GameRecords, used for wins/draws/losses, sec_per_move and illegal_rate (and saved to
+        games.csv); ``fields`` -- any other RESULTS_COLUMNS (run, step, seed, train_gpu_hours,
+        label_cpu_hours, dataset_size, gpu, note).
         Call it after every eval batch, then ``save()``: stopping early keeps the last batch.
         """
         name = estimate.name
@@ -357,12 +361,18 @@ class ResultsTable:
             raise ValueError(f"{name!r} is a {self.role(name)} row; it can't be overwritten by a model eval")
         moves = illegal = 0
         seconds = 0.0
+        wdl = {"wins": 0, "draws": 0, "losses": 0}
         for r in records:
             side = "white" if r.white == name else "black" if r.black == name else None
             if side:
                 moves += len(r.latency[side])
                 seconds += sum(r.latency[side])
                 illegal += r.illegal_attempts[side]
+                score = r.white_score if side == "white" else 1.0 - r.white_score
+                wdl["wins" if score == 1.0 else "draws" if score == 0.5 else "losses"] += 1
+        if any(wdl.values()):
+            for k, v in wdl.items():
+                fields.setdefault(k, v)
         if moves:
             fields.setdefault("sec_per_move", round(seconds / moves, 4))
             fields.setdefault("illegal_rate", round(illegal / moves, 4))
