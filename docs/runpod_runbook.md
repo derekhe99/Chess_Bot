@@ -304,6 +304,7 @@ whichever clone it is opened in.
    cd /workspace/Chess_Bot_data
    git fetch && git checkout step-13-data-scale && git reset --hard origin/step-13-data-scale
    git log -1 --oneline
+   export PIP_BREAK_SYSTEM_PACKAGES=1             # Ubuntu 24.04 blocks system-wide pip otherwise; harmless elsewhere
    python3 -m pip install -q torch --index-url https://download.pytorch.org/whl/cpu
    python3 -m pip install -q -r requirements.txt jupyter nbconvert
    python3 -m pytest tests/test_data.py -q        # downloads Stockfish into this clone on first use
@@ -338,3 +339,72 @@ whichever clone it is opened in.
 8. **Done:** send Claude the printed output (as in step 5, `01_scaled_500k.ipynb`), then
    stop the CPU pod (`runpodctl stop pod $RUNPOD_POD_ID`, or Stop on the Pods page) and
    terminate it from the Pods page: the data is on the volume.
+
+## H. LLM SFT on the 500k dataset (plan v5 Step 14)
+
+Runs on its **own L4 pod** with its own clone, `/workspace/Chess_Bot_sft`, so it never
+shares a GPU (or code) with another job: sharing would slow both and inflate both runs'
+GPU-hours. Notebook 02 with `configs/sft_500k.yaml`; its switches come from the shell.
+Length: 2 passes, ~62k steps, ~19 GPU-h of training, ~21 h of pod time with setup and the
+checkpoint validations.
+
+1. **Budget: two L4 pods bill $1.18/h together** while another L4 job runs. The balance must
+   cover `$2 + (the other pod's hours left × 0.59) + (22 × 0.59)` ≈ $15 + the other pod's
+   share. Top up first if it doesn't. Terminate stopped pods you no longer need (Pods page).
+2. **Deploy** an L4 pod as in section B (EU-RO-1, `chess-ai` volume at `/workspace`, the
+   usual PyTorch template, `HF_TOKEN` optional).
+3. **Watchdog: a fixed 22-hour cap.**
+
+   ```
+   pkill -f "runpodctl stop pod"
+   mkdir -p /workspace/chess-ai/logs
+   nohup bash -c "sleep 79200; runpodctl stop pod $RUNPOD_POD_ID" > /workspace/chess-ai/logs/watchdog_sft.log 2>&1 &
+   ```
+
+4. **Code and packages** (the clone is made once; never touch `/workspace/Chess_Bot` from
+   this pod while another pod runs from it):
+
+   ```
+   apt-get update && apt-get install -y tmux
+   cd /workspace
+   [ -d Chess_Bot_sft ] || git clone https://github.com/derekhe99/Chess_Bot.git Chess_Bot_sft
+   cd /workspace/Chess_Bot_sft
+   git fetch && git checkout step-14-sft-scale && git reset --hard origin/step-14-sft-scale
+   git log -1 --oneline
+   pip install -q -r requirements.txt
+   python -m pytest tests/test_sft.py tests/test_data.py -q
+   nvidia-smi --query-gpu=name --format=csv      # must say L4
+   ls /workspace/chess-ai/data/processed/        # both sft_2013-06_d12_n50000 and sft_scaled_d12_n500000
+   ```
+
+5. **Smoke test (~10 min):** loads the 500k data and the fixed validation set, then trains
+   a few steps on 64 positions, and prints seconds per step, peak GPU memory, and the
+   projected length of the full run.
+
+   ```
+   tmux new -A -s sft
+   cd /workspace/Chess_Bot_sft
+   SFT_CONFIG=configs/sft_500k.yaml RUN_TRAINING=1 SMOKE_TEST=1 RUN_EVAL=0 \
+     jupyter nbconvert --to notebook --execute notebooks/02_train_sft.ipynb \
+     --output-dir /workspace/chess-ai/logs --output 02_sft500k_smoke.ipynb \
+     --ExecutePreprocessor.timeout=-1
+   ```
+
+   Print its output (section F step 5's snippet, path `02_sft500k_smoke.ipynb`) and send it
+   to Claude. The lines that matter: `train split ... | validation split ...` (~495k /
+   ~5k), `s/step`, `peak GPU memory`, `full run`.
+6. **Full run:** the same command without `SMOKE_TEST=1`, `--output 02_sft500k.ipynb`.
+   Detach (`Ctrl-b`, then `d`); `tmux ls` must list `sft`. It first tokenizes ~495k
+   positions (~10-20 min, nothing printed), then trains. Progress any time (from either pod):
+
+   ```
+   python -c "import pandas as pd; d='/workspace/chess-ai/checkpoints/sft/structured_masked_nall_e2_s0_scaled_d12_n500000/'; print(pd.read_csv(d+'val_log.csv').to_string()); print(pd.read_csv(d+'train_log.csv').tail(2).to_string())"
+   ```
+
+   `val_log.csv` gets a row every 5,000 steps (~1.5 h). The Step 5 run's best validation
+   move loss was 2.84; lower here means the extra data helps.
+7. **Interrupted** (watchdog, closed session, pod restart): run the same command again. It
+   resumes from the last checkpoint (at most 5,000 steps lost), after re-tokenizing.
+8. **Done** (the prompt is back; `summary.json` in the run folder): send Claude the
+   `val_log.csv` table, then stop the pod. Checkpoints are rated later, with Step 12's
+   per-game records.

@@ -70,8 +70,18 @@ def test_sft_yaml_train_block_matches_the_defaults():
         TrainConfig(value_loss="huber")
 
 
+def test_sft_500k_config_is_the_step5_recipe_on_new_data():
+    import yaml
+    old, new = yaml.safe_load(open("configs/sft.yaml")), yaml.safe_load(open("configs/sft_500k.yaml"))
+    assert new["policy"] == old["policy"]                                   # the same player
+    changed = {k for k in old["train"] if old["train"][k] != new["train"].get(k)} | (set(new["train"]) - set(old["train"]))
+    assert changed == {"dataset", "val_from", "epochs"}                     # only data, validation set, length
+    cfg = TrainConfig.from_dict(new["train"])
+    assert run_name(PolicyConfig(), cfg) == "structured_masked_nall_e2_s0_scaled_d12_n500000"
+
+
 def test_run_name_and_subset():
-    assert run_name(PolicyConfig(), TrainConfig()) == "structured_masked_nall_e10_s0"
+    assert run_name(PolicyConfig(), TrainConfig()) == "structured_masked_nall_e10_s0"   # Step 5's folder, unchanged
     assert run_name(PolicyConfig(), dataclasses.replace(TrainConfig(), train_positions=5000)) \
         == "structured_masked_n5000_e10_s0"
     a, b = subset(100, 10, seed=3), subset(100, 10, seed=3)
@@ -96,7 +106,7 @@ def test_batched_loss_is_exactly_minus_log_p_of_the_move(tok):
     with torch.no_grad():
         move_nll, value, win_logit = batch_losses(policy, batch, "bce")
         for i, (rec, ex) in enumerate(zip(records, examples)):
-            ids = torch.tensor([ex["input_ids"]])
+            ids = torch.as_tensor(ex["input_ids"]).unsqueeze(0)
             logits = policy.model(input_ids=ids).logits.float()[0, :-1]
             labels = torch.tensor(ex["labels"][1:])
             ref = torch.nn.functional.cross_entropy(logits, labels, ignore_index=IGNORE_INDEX, reduction="sum")
@@ -167,3 +177,24 @@ def test_step_zero_is_the_untrained_model(tok, tmp_path):
     _load_adapters(loaded, step0)
     board = chess.Board()
     assert fresh.score_moves(board, B.legal_moves(board)) == loaded.score_moves(board, B.legal_moves(board))
+
+
+def test_encode_stores_compact_arrays_with_the_same_batches(tok):
+    policy = make_policy(tok)
+    ds = dataset(6)
+    exs = [encode(policy, ds[i]) for i in range(len(ds))]
+    lists = [{**e, "input_ids": e["input_ids"].tolist(), "labels": e["labels"].tolist()} for e in exs]
+    assert all(e["input_ids"].dtype.name == "int64" for e in exs)
+    a, b = collate(exs, policy.pad_id), collate(lists, policy.pad_id)
+    assert all(torch.equal(a[k], b[k]) for k in a)                          # identical tensors either way
+
+
+def test_an_older_run_folder_without_val_from_still_resumes(tok, tmp_path):
+    ds = dataset(16)
+    train(make_policy(tok), ds, ds, small_cfg(), tmp_path, max_steps=3, log=lambda *_: None)
+    cfg_file = tmp_path / "run_config.json"
+    saved = json.loads(cfg_file.read_text())
+    del saved["train"]["val_from"]                                          # as written before Step 14
+    cfg_file.write_text(json.dumps(saved))
+    summary = train(make_policy(tok), ds, ds, small_cfg(), tmp_path, max_steps=6, log=lambda *_: None)
+    assert summary["step"] == 6

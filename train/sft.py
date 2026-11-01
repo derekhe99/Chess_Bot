@@ -47,6 +47,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import chess
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -54,11 +55,20 @@ from engine import board as B
 from model.llm_policy import IGNORE_INDEX, LLMPolicy, PolicyConfig
 
 
+DEFAULT_DATASET = "sft_2013-06_d12_n50000"
+# Settings added after runs already existed, with the value those runs effectively had,
+# so an older run folder still resumes (its run_config.json lacks them).
+ADDED_SETTINGS = {"val_from": None}
+
+
 @dataclass(frozen=True)
 class TrainConfig:
     """All SFT settings. Defaults mirror configs/sft.yaml ``train:`` (agreed Sep 28, 2026)."""
 
     dataset: str = "sft_2013-06_d12_n50000"  # folder under <artifact_root>/data/processed/
+    val_from: str | None = None        # (plan v5 Step 14) None = hold out 10% of this dataset's games;
+                                       # a dataset folder = use THAT dataset's validation split instead
+                                       # (the fixed 50k one), and train on all of this dataset
     train_positions: int | None = None  # None or >= split size = the whole train split;
                                         # Day-1 used 5000 (a seeded random slice)
     val_positions: int = 1000          # held-out positions for validation losses
@@ -97,11 +107,17 @@ def run_name(policy_cfg: PolicyConfig, cfg: TrainConfig) -> str:
     """Folder name for a run, e.g. 'structured_masked_nall_e10_s0'. Same settings -> same folder (resume).
 
     ``train_positions=None`` (the whole train split) renders as ``all`` rather than the
-    Python value, so the folder name stays readable -- 'nNone' looks like a bug.
+    Python value, so the folder name stays readable -- 'nNone' looks like a bug. A dataset
+    other than the Step 3 one is appended, e.g. '..._e2_s0_scaled_d12_n500000'.
     """
     mask = "masked" if policy_cfg.masked else "unmasked"
     n = "all" if cfg.train_positions is None else cfg.train_positions
-    return f"{policy_cfg.representation}_{mask}_n{n}_e{cfg.epochs}_s{cfg.seed}"
+    name = f"{policy_cfg.representation}_{mask}_n{n}_e{cfg.epochs}_s{cfg.seed}"
+    # Any other dataset gets its name in the folder (plan v5 Step 14), so a 500k run can never
+    # resume -- or overwrite -- the Step 5 run, whose name stays as it was.
+    if cfg.dataset != DEFAULT_DATASET:
+        name += "_" + cfg.dataset.removeprefix("sft_")
+    return name
 
 
 def subset(n_total: int, n: int | None, seed: int) -> list[int]:
@@ -124,6 +140,11 @@ def encode(policy: LLMPolicy, record: dict) -> dict:
     reads exactly the text that play reads.
     """
     ex = policy.training_example(chess.Board(record["fen"]), record["label_move"])
+    # Stored as int64 arrays, not Python lists: same values (and torch's own integer type),
+    # ~1/4 the memory, which matters when every training example is tokenized up front
+    # (500k examples: ~3 GB vs ~12 GB of RAM).
+    ex["input_ids"] = np.asarray(ex["input_ids"], dtype=np.int64)
+    ex["labels"] = np.asarray(ex["labels"], dtype=np.int64)
     ex["label_value"] = float(record["label_value"])
     return ex
 
@@ -143,9 +164,9 @@ def collate(examples: list[dict], pad_id: int, device=None) -> dict:
     labels = torch.full((n, longest), IGNORE_INDEX, dtype=torch.long)
     for i, e in enumerate(examples):
         k = len(e["input_ids"])
-        ids[i, :k] = torch.tensor(e["input_ids"])
+        ids[i, :k] = torch.as_tensor(e["input_ids"], dtype=torch.long)
         mask[i, :k] = 1
-        labels[i, :k] = torch.tensor(e["labels"])
+        labels[i, :k] = torch.as_tensor(e["labels"], dtype=torch.long)
     out = {"input_ids": ids, "attention_mask": mask, "labels": labels,
            "value_index": torch.tensor([e["value_index"] for e in examples]),
            "label_value": torch.tensor([e["label_value"] for e in examples], dtype=torch.float32)}
@@ -331,6 +352,7 @@ def train(policy: LLMPolicy, train_ds, val_ds, cfg: TrainConfig, run_dir: str | 
     cfg_path = run_dir / "run_config.json"
     if cfg_path.exists():
         saved = json.loads(cfg_path.read_text())
+        saved["train"] = {**ADDED_SETTINGS, **saved["train"]}  # older runs lack later settings
         if json.loads(json.dumps(settings)) != {k: saved[k] for k in ("train", "policy")}:
             raise ValueError(f"{run_dir} was started with different settings; use a new run folder")
     else:

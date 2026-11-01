@@ -18,7 +18,7 @@ import zstandard
 
 from data import download
 from data.annotate import annotate, load_labels, usable_cpus
-from data.dataset import PositionDataset, fixed_split, load_datasets, near_win_report, split_by_game
+from data.dataset import PositionDataset, fixed_split, load_datasets, load_split, near_win_report, split_by_game
 from data.sample_positions import (PHASES, PhaseRule, game_ending, nonpawn_material, phase_quotas, position_key,
                                    sample_positions, tag_phase)
 
@@ -223,6 +223,20 @@ def test_fixed_split_keeps_the_base_validation_set():
     train, val = fixed_split(new, base, 0.2, 0)
     assert val.equals(expected_val)                                         # the same validation set as before
     assert list(train["game_id"]) == ["n0", "n1", "n2", "n4"]               # leaked game and position dropped
+
+
+def test_load_split_both_ways(tmp_path):
+    base = _labels_df(n_games=10, per_game=2)
+    base["fen"] = [_distinct_fen(i) for i in range(len(base))]
+    big = pd.DataFrame({"fen": [_distinct_fen(200 + i) for i in range(30)], "best_move": "a1a2", "win_prob": 0.5,
+                        "phase": "endgame", "game_id": [f"b{i // 3}" for i in range(30)]})
+    for name, df in (("base", base), ("big", big)):
+        (tmp_path / name).mkdir()
+        df.to_parquet(tmp_path / name / "labels.parquet", index=False)
+    tr, va = load_split(tmp_path, "base", 0.2, 0)                          # Step 5: split its own games
+    assert (tr, va) == (tr, va) and len(tr) + len(va) == len(base)
+    tr2, va2 = load_split(tmp_path, "big", 0.2, 0, val_from="base")         # Step 14: fixed validation set
+    assert va2.equals(va) and len(tr2) == len(big)
 
 
 def test_near_win_report():

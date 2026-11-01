@@ -11,6 +11,7 @@ Main pieces:
 - split_by_game   -- train/validation split where no game lands on both sides
 - fixed_split     -- (Step 13) any dataset's training rows + the ONE validation set
                      every size and architecture shares (the 50k's validation split)
+- load_split      -- (Step 14) a dataset folder -> (train, validation) DataFrames, either way
 - near_win_report -- (Step 13) per phase: how many positions are near-wins or simple endings
 - PositionDataset -- PyTorch Dataset of plain records for one representation
 - load_datasets   -- labels.parquet -> (train, validation) datasets
@@ -61,6 +62,22 @@ def fixed_split(df: pd.DataFrame, base_df: pd.DataFrame, val_fraction: float = 0
     keys = df["fen"].map(lambda f: position_key(chess.Board(f)))
     keep = ~df["game_id"].isin(val_games) & ~keys.isin(val_keys)
     return df[keep].reset_index(drop=True), val_df
+
+
+def load_split(processed_dir: str | Path, dataset: str, val_fraction: float = 0.1, seed: int = 0,
+               val_from: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(train, validation) for a dataset folder under ``processed_dir``.
+
+    val_from None: hold out ``val_fraction`` of this dataset's games (Step 3/5, the 50k set).
+    val_from a folder name: validation = that dataset's held-out games (the fixed 50k split),
+    training = this whole dataset minus any row from those games or positions (Step 14, 500k).
+    """
+    processed_dir = Path(processed_dir)
+    df = pd.read_parquet(processed_dir / dataset / "labels.parquet")
+    if val_from is None:
+        return split_by_game(df, val_fraction, seed)
+    base = pd.read_parquet(processed_dir / val_from / "labels.parquet")
+    return fixed_split(df, base, val_fraction, seed)
 
 
 def near_win_report(df: pd.DataFrame, near: float = 0.9, simple_pieces: int = 6) -> pd.DataFrame:

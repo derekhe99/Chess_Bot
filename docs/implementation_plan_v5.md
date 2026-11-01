@@ -22,6 +22,9 @@ config is set (cap 18). Step 13 design (Derek, Oct 31): the 500k set is sampled 
 the same rules (not nested), keeps the 50k's validation set, records each game's result
 and ending, and reports its share of near-win positions before any enrichment is
 considered; one CPU-only pod labels it (no multi-pod chunking).
+**Update, Nov 1, 2026:** the 500k set is labeled (3.10 CPU-h, Step 13). LLM SFT on 500k:
+capped at 2 passes (Derek; Sec 5 item 8), the Step 5 recipe otherwise unchanged, on its own
+L4 pod while AlphaZero stage 2 runs (Step 14).
 
 ---
 
@@ -86,7 +89,7 @@ considered; one CPU-only pod labels it (no multi-pod chunking).
 | Terminology | **Game** = one full game. **Round** = a batch of self-play games then one training update. SFT has no rounds. |
 | Eval | **Frozen reference set:** `sf_1320` = 1320 (pin), `sf_1500`, `sf_1700`, `random`, `greedy`, `step_20000`. Each new model is rated against it; only its own rating is fitted. Stockfish members play at 0.1 s per move. New models: 20 games against each of the 2–3 nearest reference opponents, in batches of 10, row saved after each batch. No CI target; +20 games by hand only if a CI is wider than ±200. A model may be frozen as a new rung only if CIs in the gap above `step_20000` become unusable. **New in v5:** every eval game is recorded (Step 12), and head-to-head matches between models are reported as their own table, not fed into the reference fit. |
 | Source of truth | **`results/results.csv` is the one summary file** (one row per player, `role` = pin / reference / model, now with W/D/L): every chart and the Step 11 slides read their headline numbers from it, and only `eval.anchors.ResultsTable` writes it. **`results/games.csv` (v5, decided Oct 31) is the supporting detail behind it:** one row per eval or head-to-head game, used to build summaries (W/D/L, draw types, head-to-head tables), never as a second source of headline numbers. Each run folder keeps scratch logs for loss curves. |
-| Compute accounting | No equal budgets. Each arm trains to plateau or a loose cap; fairness comes from **Elo vs. training GPU-hours** curves, 3–4 checkpoints per run, each row carrying cumulative training GPU-hours. **Stockfish labeling CPU-hours are charged to every arm that trains on the labels, for the dataset size it used** (0.99 h for the 50k set). Dollars = GPU-h × `gpu_usd_per_hour` + CPU-h × `cpu_usd_per_hour` (RunPod on-demand, source + date in `base.yaml`), in the analysis notebook. Inference cost = sec/move from eval games × the same rate. |
+| Compute accounting | No equal budgets. Each arm trains to plateau or a loose cap; fairness comes from **Elo vs. training GPU-hours** curves, 3–4 checkpoints per run, each row carrying cumulative training GPU-hours. **Stockfish labeling CPU-hours are charged to every arm that trains on the labels, for the dataset size it used** (0.99 h for the 50k set, 3.10 h for the 500k set). Dollars = GPU-h × `gpu_usd_per_hour` + CPU-h × `cpu_usd_per_hour` (RunPod on-demand, source + date in `base.yaml`), in the analysis notebook. Inference cost = sec/move from eval games × the same rate. |
 | Rigor | 1 seed per arm; more later if time allows. |
 | Engine | Stockfish 19, pinned. Every rating depends on it; never upgrade without discussing it. |
 
@@ -372,15 +375,20 @@ head-to-head round (3 pairs × 40 games) played and tabulated.
   games that ended in checkmate) is considered only if these shares and Step 12's draw
   types show a gap, as a separate dataset variant, so the 50k-vs-500k comparison stays
   a pure size comparison.
-- **Cost:** ~1 CPU-h per 50k labels → 500k ≈ 10 CPU-h (~2 h wall on ~5 CPUs), 2M ≈ 40
-  CPU-h (~8 h wall). Logged in each dataset's `manifest.json`; charged to every arm that
-  trains on that size.
+- **Cost:** estimated ~1 CPU-h per 50k labels (the Colab rate); actual for 500k: **3.10
+  CPU-h** (the RunPod CPU labels ~3× faster per position), so 2M ≈ 12 CPU-h. Logged in each
+  dataset's `manifest.json`; charged to every arm that trains on that size.
 - Own-position labeling (DAgger: label the positions a trained model reaches in its own
   games) is parked until Step 14's results show whether drift is a problem.
 
 *Gate:* the 500k set is labeled with its CPU-hours in the manifest; the phase mix
 matches; no validation game or position in it; near-win and simple-ending shares
 reported per phase.
+
+*Result (Oct 31):* `sft_scaled_d12_n500000`: 500,000 positions (opening 166,650 /
+middlegame 166,700 / endgame 166,650); Stockfish 3.10 CPU-h (11,150 s, 0.022 s/position);
+labeling 13.7 min wall on a 16-vCPU CPU pod. Gate checks and the near-win table: from
+the notebook's printed output (to record here).
 
 ### Step 14 — Imitation at scale: CNN SFT and LLM SFT
 
@@ -396,10 +404,20 @@ side. *Branch:* `step-14-sft-scale`.
   parameters, AlphaZero's size). Add one larger network, 10 × 128 (~3.2M, ~4.5× larger,
   still ~190× smaller than the LLM), only if CNN SFT plateaus, to test whether network
   capacity is the limit.
-- **LLM SFT on 500k:** the Step 5 recipe unchanged (same prompt, LoRA, value head, loss),
-  only the data grows. Cost estimate from Step 5 (~52k examples per GPU-h): one pass over
-  500k ≈ 9.6 GPU-h; over 2M ≈ 38 GPU-h. Stop on validation loss. Cap: open (Sec 5
-  item 8).
+- **LLM SFT on 500k:** the Step 5 recipe unchanged (same prompt, LoRA, value head, loss,
+  learning rate, batch size), only the data grows. Cost estimate from Step 5 (~52k
+  examples per GPU-h): one pass over 500k ≈ 9.6 GPU-h; over 2M ≈ 38 GPU-h.
+  **Cap (Derek, Nov 1): 2 passes** (~62k steps, ~19 GPU-h at most, matching AlphaZero
+  stage 2's 18 and the RL runs' ~17–18 totals). The learning rate is constant, so the 1-pass
+  checkpoint (~31k steps) is the same model a 1-pass run would give: both levels are
+  rated, and either can seed RL later. Validation is the fixed 50k split (`val_from`), so
+  its losses compare directly with the Step 5 run's (best 2.84 at 15k). Config
+  `configs/sft_500k.yaml` (Step 5's `configs/sft.yaml` untouched); run folder
+  `structured_masked_nall_e2_s0_scaled_d12_n500000` (any non-default dataset is named in
+  the folder, so it can't resume the Step 5 run). Notebook 02 (`SFT_CONFIG`,
+  `RUN_TRAINING`, `RUN_EVAL` from the shell) on its own L4 pod and repo clone
+  (`docs/runpod_runbook.md` section H). Training examples are stored as int64 arrays
+  (same values, ~3 GB instead of ~12 GB of RAM for 500k).
 - **Eval:** 3–4 checkpoints per run, no search (`NoSearchAgent` for the CNN; the existing
   masked argmax for the LLM, which is the same rule), with full records, into
   `results.csv`. Pick the lowest-validation-loss checkpoint plus evenly spaced ones.
@@ -501,7 +519,8 @@ both ways (`EVAL_NO_SEARCH = True`); launch per `docs/runpod_runbook.md` section
    matched sec/move (fair on inference cost; the LLM would get ~1–2 simulations at
    AlphaZero's 0.09 s).
 7. **Step 10.** Defer (proposed) or keep the pure LLM self-play run.
-8. **Caps.** Step 14 runs (CNN SFT, LLM SFT at 500k / 2M); AlphaZero stage 3.
+8. **Caps.** LLM SFT at 500k decided Nov 1: 2 passes (Step 14). Still open: CNN SFT, LLM
+   SFT at 2M, AlphaZero stage 3.
 9. **Parked:** richer labels (Stockfish's score for every legal move, which needs
    relabeling); DAgger; LLM + MCTS option B; AlphaZero retune; Step 8.
 10. **Prices:** fill `gpu_usd_per_hour` / `cpu_usd_per_hour` in `base.yaml` (source +

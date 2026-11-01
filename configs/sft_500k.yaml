@@ -1,0 +1,47 @@
+# LLM SFT on the 500k dataset (plan v5 Step 14). The Step 5 recipe unchanged -- same player
+# (policy block identical to configs/sft.yaml; a test checks) and same training settings --
+# except the data, the fixed validation set, and the length.
+# Notebook 02: SFT_CONFIG=configs/sft_500k.yaml (runbook section H).
+
+policy:
+  model_id: Qwen/Qwen3-0.6B
+  representation: structured     # structured | fen      (the board-representation toggle)
+  masked: true                   # true = pick among legal moves only; false = free generation
+  instruction: "You are playing chess. Reply with your move for the side to move, in UCI notation (for example e2e4, or e7e8q to promote)."
+  enable_thinking: false         # Qwen3's hard switch; false = the non-reasoning baseline
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  lora_target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+  dtype: auto                    # bf16 on GPUs that have it (L4), fp16 otherwise (T4), fp32 on CPU
+  score_batch_size: 32           # legal moves scored per forward pass (bounds GPU memory)
+  prefix_cache: true             # run the prompt once and reuse it for every legal move
+  max_new_tokens: 8              # unmasked: a UCI move is at most 5 characters
+  retry_temperature: 1.0         # unmasked: sampling temperature after an illegal move (1st try is greedy)
+  seed: 0
+
+# Training (train/sft.py -> TrainConfig). Differences from configs/sft.yaml only:
+#   dataset   -- the Step 13 500k set (3.10 CPU-h of labeling, its manifest.json)
+#   val_from  -- validation = the 50k set's held-out games, so 50k and 500k runs are scored on
+#                the same positions; all 500k positions train (none overlap that split)
+#   epochs    -- 2 passes (Derek, Nov 1; plan Sec 5 item 8): ~62k steps, ~19 GPU-h at most.
+#                Constant learning rate, so the cap only bounds the spend: the 1-pass checkpoint
+#                (~31k steps) is the same model it would be in a 1-pass run, and both levels are
+#                evaluated (and either can seed RL later).
+train:
+  dataset: sft_scaled_d12_n500000
+  val_from: sft_2013-06_d12_n50000
+  train_positions: null
+  val_positions: 1000
+  val_top1_positions: 200
+  epochs: 2
+  batch_size: 16
+  optimizer: adamw
+  learning_rate: 1.0e-4
+  weight_decay: 0.0
+  grad_clip: 1.0
+  value_loss: bce
+  value_loss_weight: 1.0
+  checkpoint_every: 5000         # ~1.5 GPU-h apart; ~13 checkpoints over 2 passes
+  log_every: 25
+  seed: 0
