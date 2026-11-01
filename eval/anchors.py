@@ -454,6 +454,15 @@ class ResultsTable:
         self._changed.clear()
         self._games.clear()
 
+    def log_games(self, records, kind: str, subject: str) -> None:
+        """Stage games that are not behind a results row (e.g. kind "h2h"); written at save().
+
+        They replace any saved games with the same kind and subject (a replayed pair leaves
+        no stale games). Model evals don't need this: log_model stages their games itself.
+        """
+        eval_id = f"{_dt.datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
+        self._games[(kind, subject)] = game_rows(records, kind, subject, eval_id)
+
     def _read_games(self) -> list[dict]:
         """games.csv rows as dicts ([] if the file doesn't exist yet)."""
         if not self.games_path.exists():

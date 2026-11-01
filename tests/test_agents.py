@@ -91,3 +91,82 @@ def test_make_agent_switch_and_names():
     assert agent_name("structured_masked_nall_e10_s0@25000", 16) == "structured_masked_nall_e10_s0_mcts16@25000"
     assert agent_name("az_b6c64_s0@r53", 0) == "az_b6c64_s0_nosearch@r53"
     assert agent_name("plain", 50) == "plain_mcts50"
+
+
+# ------------------------------------------------------ head-to-head (Step 12d) ----
+
+from eval.anchors import RandomAgent, ResultsTable
+from eval.match import elo_difference, head_to_head, head_to_head_table
+
+
+def test_head_to_head_plays_every_pair_with_the_same_openings():
+    players = {n: RandomAgent(n, seed=i) for i, n in enumerate(["a", "b", "c"])}
+    seen = []
+    games = head_to_head(players, 4, max_plies=20, verbose=False, on_pair=lambda a, b, g: seen.append((a, b, len(g))))
+    assert seen == [("a", "b", 4), ("a", "c", 4), ("b", "c", 4)] and len(games) == 12
+    by_pair = {}
+    for g in games:
+        by_pair.setdefault(frozenset((g.white, g.black)), []).append(g)
+    openings = []
+    for pair_games in by_pair.values():
+        assert [g.white for g in pair_games][0] != pair_games[1].white      # colors swapped
+        openings.append([tuple(g.opening) for g in pair_games])
+    assert openings[0] == openings[1] == openings[2]                       # same openings for every pair
+    again = head_to_head(players, 2, max_plies=10, verbose=False, skip={frozenset(("a", "b")), frozenset(("a", "c"))})
+    assert {frozenset((g.white, g.black)) for g in again} == {frozenset(("b", "c"))}
+
+
+def _g(white, black, score, termination):
+    return {"white": white, "black": black, "white_score": score, "termination": termination}
+
+
+def test_head_to_head_table():
+    games = ([_g("x", "y", 1.0, "checkmate")] * 3 + [_g("y", "x", 1.0, "checkmate")]
+             + [_g("x", "y", 0.5, "threefold_repetition")] * 2 + [_g("y", "x", 0.5, "stalemate")] * 2
+             + [_g("p", "q", 1.0, "checkmate")] * 4)
+    t = {(r["a"], r["b"]): r for r in head_to_head_table(games, n_boot=300)}
+    xy = t[("x", "y")]
+    assert (xy["games"], xy["a_wins"], xy["draws"], xy["a_losses"]) == (8, 3, 4, 1)
+    assert xy["a_score"] == 0.625 and xy["elo_diff"] == round(elo_difference(0.625, 8), 1) > 0
+    assert xy["ci_low"] <= xy["elo_diff"] <= xy["ci_high"]
+    assert xy["draw_types"] == {"threefold_repetition": 2, "stalemate": 2} and xy["decisive_types"] == {"checkmate": 4}
+    pq = t[("p", "q")]
+    assert pq["at_edge"] and pq["elo_diff"] == round(elo_difference(1.0, 4), 1)     # a bound, not infinity
+    assert abs(elo_difference(0.75, 40) - 190.85) < 0.01 and elo_difference(0.5, 10) == 0.0
+
+
+def test_log_games_saves_head_to_head_next_to_eval_games(tmp_path):
+    from eval.match import evaluate_agent
+    path = tmp_path / "results.csv"
+    t = ResultsTable(path)
+    est, recs = evaluate_agent(RandomAgent("m", seed=1), {"random": RandomAgent("random", seed=2)}, {"random": 300.0},
+                               n_games=2, n_boot=20, verbose=False, max_plies=20)
+    t.log_model(est, recs)
+    h = head_to_head({"a": RandomAgent("a", seed=3), "b": RandomAgent("b", seed=4)}, 4, max_plies=20, verbose=False)
+    t.log_games(h, "h2h", "round1|a|b")
+    t.save()
+    t2 = ResultsTable(path)
+    assert len(t2.games("m")) == 2 and len(t2.games("round1|a|b", kind="h2h")) == 4
+    t2.log_games(h[:2], "h2h", "round1|a|b")                                # a replayed pair replaces its games
+    t2.save()
+    assert len(ResultsTable(path).games("round1|a|b", kind="h2h")) == 2 and len(ResultsTable(path).games("m")) == 2
+
+
+def test_load_player_alphazero_both_ways(tmp_path):
+    import dataclasses as dc
+    from eval.agents import checkpoint_dir, load_player
+    from model.az_net import AZNet, NetConfig
+    spec = {"name": "az_t@r3", "kind": "alphazero", "run": "az_t", "step": 3}
+    d = checkpoint_dir(spec, tmp_path)
+    d.mkdir(parents=True)
+    net_cfg = NetConfig(blocks=1, channels=8)
+    torch.save({"net_config": dc.asdict(net_cfg), "state_dict": AZNet(net_cfg).state_dict()}, d / "net.pt")
+    assert d == tmp_path / "checkpoints" / "alphazero" / "az_t" / "checkpoints" / "round_0003"
+    no_search = load_player({**spec, "simulations": 0}, tmp_path, device="cpu")
+    search = load_player({**spec, "simulations": 4}, tmp_path, device="cpu")
+    assert isinstance(no_search, NoSearchAgent) and isinstance(search, MCTSAgent) and search.cfg.simulations == 4
+    board = chess.Board()
+    assert B.is_legal(board, no_search.select_move(board)) and B.is_legal(board, search.select_move(board))
+    assert checkpoint_dir({"kind": "sft", "run": "r", "step": 15000}, tmp_path).name == "step_015000"
+    with pytest.raises(FileNotFoundError):
+        load_player({**spec, "step": 4}, tmp_path)

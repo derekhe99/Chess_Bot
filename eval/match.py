@@ -18,11 +18,17 @@ Main pieces:
                     the ratings aren't yet tight enough to freeze (Steps 2 and 5)
 - evaluate_agent -- the entry point later Steps use: play a model against the
                     frozen reference set and return its Elo with a confidence interval
+- head_to_head   -- (plan v5 Step 12d) models against each other: every pair, the same
+                    openings for every pair, colors swapped; kept out of the reference fit
+- head_to_head_table -- per pair: score, W/D/L, implied Elo difference with a bootstrap
+                    CI, and how the draws happened
 """
 from __future__ import annotations
 
+import math
 import random
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Callable, Protocol
 
@@ -314,3 +320,81 @@ def evaluate_agent(agent: Agent, opponents: dict[str, Agent], ratings: dict[str,
         if on_batch is not None:
             on_batch(estimate, records)
     return estimate, records
+
+
+# ---------------------------------------------------- head-to-head (Step 12d) ----
+
+def head_to_head(players: dict[str, Agent], games_per_pair: int, *, seed: int = 0, opening_plies: int = 4,
+                 skip: set[frozenset] | None = None,
+                 on_pair: Callable[[str, str, list[GameRecord]], None] | None = None,
+                 verbose: bool = True, **game_kwargs) -> list[GameRecord]:
+    """Every pair of ``players`` plays ``games_per_pair`` games: a round robin (plan v5 Step 12d).
+
+    Each pair plays color-swapped pairs of games from shared random openings (play_match),
+    and every pair gets the SAME openings (same seed), so no pair is luckier than another.
+    These games say how models do against each other; they never enter the reference-set
+    fit, so every model's Elo still comes from the frozen opponents alone.
+
+    Inputs: players {name: agent}; skip -- pairs (frozenset of two names) already played;
+    on_pair(a, b, games) -- called after each pair (save there: a stop loses one pair at most).
+    Output: all games played in this call.
+    """
+    if games_per_pair % 2:
+        raise ValueError("games_per_pair must be even (games come in color-swapped pairs)")
+    names, records = list(players), []
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            if skip and frozenset((a, b)) in skip:
+                if verbose:
+                    print(f"{a} vs {b}: already played -- skipped")
+                continue
+            start = time.perf_counter()
+            games = play_match(players[a], players[b], games_per_pair, opening_plies=opening_plies,
+                               seed=seed, **game_kwargs)
+            records += games
+            if on_pair is not None:
+                on_pair(a, b, games)
+            if verbose:
+                s = summarize(games, a)
+                print(f"{a} vs {b}: {s['wins']}W {s['draws']}D {s['losses']}L for {a} "
+                      f"({time.perf_counter() - start:.0f}s)")
+    return records
+
+
+def elo_difference(score: float, games: int) -> float:
+    """Elo gap implied by a score: -400 * log10(1/score - 1).
+
+    A score of exactly 0 or 1 implies an infinite gap, so it is held half a game inside
+    (1/(2*games) from the edge): the result reads as "at least this far apart".
+    """
+    edge = 1 / (2 * games)
+    s = min(max(score, edge), 1 - edge)
+    return -400 * math.log10(1 / s - 1) + 0.0   # + 0.0: an even score reads 0.0, not -0.0
+
+
+def head_to_head_table(games: list[dict], n_boot: int = 2000, seed: int = 0) -> list[dict]:
+    """One row per pair from head-to-head games (games.csv rows: white, black, white_score, termination).
+
+    Per pair (``a`` = first by name): games, a's wins / draws / a's losses, a's score, the
+    implied Elo difference (a minus b) with a 95% bootstrap CI (games resampled with
+    replacement), whether the score sat at 0 or 1 (``at_edge``: the gap is a bound), and
+    the draws and decisive games by how they ended.
+    """
+    rng = random.Random(seed)
+    by_pair: dict[tuple[str, str], list[dict]] = {}
+    for g in games:
+        by_pair.setdefault(tuple(sorted((g["white"], g["black"]))), []).append(g)
+    table = []
+    for (a, b), gs in sorted(by_pair.items()):
+        pts = [float(g["white_score"]) if g["white"] == a else 1 - float(g["white_score"]) for g in gs]
+        n = len(pts)
+        score = sum(pts) / n
+        boot = sorted(elo_difference(sum(rng.choice(pts) for _ in range(n)) / n, n) for _ in range(n_boot))
+        table.append({"a": a, "b": b, "games": n, "a_wins": pts.count(1.0), "draws": pts.count(0.5),
+                      "a_losses": pts.count(0.0), "a_score": round(score, 3),
+                      "elo_diff": round(elo_difference(score, n), 1) + 0.0,
+                      "ci_low": round(boot[int(0.025 * n_boot)], 1) + 0.0, "ci_high": round(boot[int(0.975 * n_boot) - 1], 1) + 0.0,
+                      "at_edge": score in (0.0, 1.0),
+                      "draw_types": dict(Counter(g["termination"] for g, p in zip(gs, pts) if p == 0.5)),
+                      "decisive_types": dict(Counter(g["termination"] for g, p in zip(gs, pts) if p != 0.5))})
+    return table

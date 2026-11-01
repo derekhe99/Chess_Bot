@@ -19,6 +19,8 @@ Main pieces:
 - MCTSAgent     -- search_move at N simulations: no root noise, most-visited move
 - make_agent    -- one switch: simulations 0 -> NoSearchAgent, N -> MCTSAgent(N)
 - agent_name    -- the results.csv row name for a search setting (plan v5 Sec 2.2)
+- load_player   -- a saved checkpoint of any arm, by a plain spec, as a playable agent
+                   (the head-to-head and later re-evals load players this way)
 
 Every agent follows the harness's Agent interface (eval/match.py): ``name`` and
 ``select_move(board) -> UCI``. Its search budget is its inference cost: it shows up in
@@ -27,6 +29,7 @@ the eval games' seconds per move, and so in results.csv's sec_per_move.
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
 
 import chess
 
@@ -88,3 +91,38 @@ def make_agent(evaluator: Evaluator, name: str, simulations: int,
     if simulations == 0:
         return NoSearchAgent(evaluator, name)
     return MCTSAgent(evaluator, name, dataclasses.replace(cfg or MCTSConfig(), simulations=simulations))
+
+
+PLAYER_KINDS = ("sft", "llm_rl", "alphazero")
+
+
+def checkpoint_dir(spec: dict, artifact_root: str | Path) -> Path:
+    """Where a spec's checkpoint lives under ``artifact_root``/checkpoints."""
+    kind, run, step = spec["kind"], spec["run"], int(spec["step"])
+    if kind not in PLAYER_KINDS:
+        raise ValueError(f"kind must be one of {PLAYER_KINDS}, got {kind!r}")
+    sub = f"step_{step:06d}" if kind == "sft" else f"round_{step:04d}"
+    return Path(artifact_root) / "checkpoints" / kind / run / "checkpoints" / sub
+
+
+def load_player(spec: dict, artifact_root: str | Path, *, device=None):
+    """A saved checkpoint as a playable agent, from a plain spec.
+
+    spec: {"name": row name, "kind": "sft" | "llm_rl" | "alphazero", "run": run folder,
+           "step": SFT step or RL / AlphaZero round, "simulations": AlphaZero search budget
+           (0 = no search; default: configs/alphazero.yaml's)}.
+    LLM checkpoints play as in their evals (masked argmax). Imports are lazy: loading an
+    LLM pulls in transformers.
+    """
+    path = checkpoint_dir(spec, artifact_root)
+    if not path.is_dir():
+        raise FileNotFoundError(f"{spec['name']}: no checkpoint at {path}")
+    if spec["kind"] in ("sft", "llm_rl"):
+        from train.sft import load_checkpoint
+        return load_checkpoint(path, device=device, name=spec["name"])
+    from model.az_net import AZEvaluator
+    from train.az_train import load_checkpoint, load_configs
+    net = load_checkpoint(path, device)
+    _, _, mcts_cfg, _ = load_configs()
+    sims = int(spec.get("simulations", mcts_cfg.simulations))
+    return make_agent(AZEvaluator(net, next(net.parameters()).device), spec["name"], sims, mcts_cfg)
