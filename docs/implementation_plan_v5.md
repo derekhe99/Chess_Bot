@@ -322,6 +322,10 @@ Q1–Q4 below. *Branch:* `step-12-eval-v2` from `main`.
   the more trained one taken), `az_b6c64_s0@r53` (AlphaZero, 729). 3 pairs × 40 = 120
   games. New arms (Steps 14–16) join with their best-rated checkpoint as they finish; if
   stage 2 produces a better AlphaZero checkpoint, it replaces r53.
+  **Changed Nov 1 (Derek):** AlphaZero r109 (798) replaces r53; the SFT entry is the 500k
+  run's step 30k (`structured_masked_nall_e2_s0_scaled_d12_n500000@30000`, end of pass 1)
+  instead of the 50k run's 15k: the latest SFT, chosen by validation loss (2.59 vs. 2.84)
+  before its Elo exists. It is also in the 500k eval list, so it gets a rating too.
 - **(e) Re-evaluate the headline checkpoints with full records** (decided Oct 31,
   10 checkpoints): SFT 15k (best) and 25k (last); the last checkpoint (r20) of each RL
   run 1–4; AlphaZero r5, r20, r40, r53. Same opponents (`random`, `greedy`,
