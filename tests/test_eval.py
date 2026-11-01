@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from engine.stockfish import SF_VERSION
-from eval.anchors import (RESULTS_COLUMNS, REFERENCE_SET, SMOKE_TEST_OPPONENT, GreedyAgent, RandomAgent,
+from eval.anchors import (GAMES_COLUMNS, RESULTS_COLUMNS, REFERENCE_SET, SMOKE_TEST_OPPONENT, GreedyAgent, RandomAgent,
                           ResultsTable, StockfishAgent, fixed_ratings)
 from eval.elo import expected_score, fit_ratings, fit_with_ci, pairs_needing_games
 from eval.match import evaluate_agent, play_game, play_match, rate_adaptively, summarize, to_results
@@ -337,6 +337,75 @@ def test_results_table_breaks_a_stale_lock(tmp_path):
 
 
 # ---------------------------------------------------------------- match ----
+
+# --------------------------------------------------- games.csv (Step 12a) ----
+
+class ScriptedAgent:
+    """Plays a fixed list of moves (for a game with a known ending)."""
+
+    def __init__(self, name, moves):
+        self.name, self._moves = name, iter(moves)
+
+    def select_move(self, board):
+        return next(self._moves)
+
+
+def test_games_csv_gets_one_row_per_eval_game_with_its_ending(tmp_path):
+    path = tmp_path / "results.csv"
+    t = ResultsTable(path)
+    anchors = {"greedy": GreedyAgent(seed=1), "random": RandomAgent("random", seed=2)}
+
+    def save(est, recs):
+        t.log_model(est, recs, run="run_a", step=1)
+        t.save()
+
+    _, recs = evaluate_agent(RandomAgent("candidate", seed=3), anchors, {"greedy": 600.0, "random": 300.0},
+                             n_games=4, batch_games=2, on_batch=save, n_boot=20, verbose=False, max_plies=40)
+    games = ResultsTable(path).games("candidate")
+    assert len(games) == len(recs) == 8                    # every game, once (not once per batch)
+    assert len({g["eval_id"] for g in games}) == 1 and [int(g["game"]) for g in games] == list(range(8))
+    for g, r in zip(games, recs):
+        assert (g["white"], g["black"], g["termination"], int(g["plies"])) == (r.white, r.black, r.termination, r.plies)
+        assert g["moves"].split() == r.moves and g["opening"].split() == r.opening
+    assert {g["termination"] for g in games} == {"max_plies"} or all(g["termination"] for g in games)
+    with open(t.games_path, newline="") as f:
+        assert next(csv.reader(f)) == GAMES_COLUMNS
+
+
+def test_games_csv_records_a_checkmate():
+    fools_mate = play_game(ScriptedAgent("w", ["f2f3", "g2g4"]), ScriptedAgent("b", ["e7e5", "d8h4"]))
+    from eval.anchors import game_rows
+    (row,) = game_rows([fools_mate], "eval", "b", "x")
+    assert row["termination"] == "checkmate" and row["result"] == "0-1" and row["plies"] == 4
+
+
+def test_games_csv_a_new_eval_replaces_the_old_games(tmp_path):
+    # A re-eval (or a restarted eval) of the same model leaves exactly the new games behind its row.
+    path = tmp_path / "results.csv"
+    anchors = {"random": RandomAgent("random", seed=2)}
+    for n in (6, 2):
+        t = ResultsTable(path)
+        est, recs = evaluate_agent(RandomAgent("m", seed=n), anchors, {"random": 300.0}, n_games=n,
+                                   n_boot=20, verbose=False, max_plies=20)
+        t.log_model(est, recs)
+        t.save()
+    games = ResultsTable(path).games("m")
+    assert len(games) == 2 and int(ResultsTable(path).rows["m"]["games"]) == 2
+
+
+def test_games_csv_two_writers_keep_each_others_games(tmp_path):
+    path = tmp_path / "results.csv"
+    ResultsTable(path).save()
+    a, b = ResultsTable(path), ResultsTable(path)
+    for t, name in ((a, "llm@r5"), (b, "az@r5")):
+        est, recs = evaluate_agent(RandomAgent(name, seed=1), {"random": RandomAgent("random", seed=2)},
+                                   {"random": 300.0}, n_games=2, n_boot=20, verbose=False, max_plies=20)
+        t.log_model(est, recs)
+    a.save()
+    b.save()
+    t = ResultsTable(path)
+    assert len(t.games("llm@r5")) == 2 and len(t.games("az@r5")) == 2
+
 
 def test_play_game_finishes_and_records():
     g = play_game(RandomAgent("w", seed=1), RandomAgent("b", seed=2), opening=["e2e4", "e7e5"])

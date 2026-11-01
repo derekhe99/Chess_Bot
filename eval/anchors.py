@@ -20,7 +20,10 @@ Main pieces:
 - build_reference_agents -- playable agents for reference rows (incl. checkpoint rungs)
 - ResultsTable       -- results/results.csv, the one file of record: the pin, the frozen
                         reference set, and every evaluated model (plan v4, Sec 2.2). Saves
-                        merge under a lock file, so jobs sharing the file keep each other's rows
+                        merge under a lock file, so jobs sharing the file keep each other's rows.
+                        Also writes results/games.csv (plan v5 Step 12a): one row per game
+                        behind each model row, the supporting detail (never a second source
+                        of headline numbers)
 
 Every member follows the harness's Agent interface (eval/match.py): a ``name``
 and ``select_move(board) -> UCI string``.
@@ -217,6 +220,32 @@ RESULTS_COLUMNS = ["name", "role", "rating", "ci_low", "ci_high", "games", "run"
                    "stockfish_version", "date", "spec", "note"]
 ROLES = ("pin", "reference", "model")
 
+# results/games.csv (plan v5 Step 12a): one row per eval game.
+#   kind/subject -- "eval" + the rated model's name (the results.csv row these games are behind);
+#                   later "h2h" + a match name for head-to-head games (Step 12d)
+#   eval_id      -- one id per eval run, so games from different runs of the same model can't mix
+#   game         -- the game's index within that eval
+#   result       -- "1-0" / "1/2-1/2" / "0-1"; termination -- checkmate, stalemate,
+#                   insufficient_material, threefold_repetition, fifty_moves, max_plies, illegal_move, ...
+#   opening / moves -- UCI, space-separated (moves includes the opening): enough to replay any game
+GAMES_COLUMNS = ["kind", "subject", "eval_id", "game", "date", "white", "black", "result", "white_score",
+                 "termination", "plies", "white_sec_per_move", "black_sec_per_move", "white_illegal",
+                 "black_illegal", "opening", "moves"]
+
+
+def game_rows(records, kind: str, subject: str, eval_id: str) -> list[dict]:
+    """GameRecords (eval.match) -> games.csv rows, in play order."""
+    def per_move(lat):
+        return round(sum(lat) / len(lat), 4) if lat else ""
+    today = _dt.date.today().isoformat()
+    return [{"kind": kind, "subject": subject, "eval_id": eval_id, "game": i, "date": today,
+             "white": r.white, "black": r.black,
+             "result": {1.0: "1-0", 0.5: "1/2-1/2", 0.0: "0-1"}[r.white_score], "white_score": r.white_score,
+             "termination": r.termination, "plies": r.plies,
+             "white_sec_per_move": per_move(r.latency["white"]), "black_sec_per_move": per_move(r.latency["black"]),
+             "white_illegal": r.illegal_attempts["white"], "black_illegal": r.illegal_attempts["black"],
+             "opening": " ".join(r.opening), "moves": " ".join(r.moves)} for i, r in enumerate(records)]
+
 
 class ResultsTable:
     """``results/results.csv``: the project's one file of record (plan v4, Sec 2.2).
@@ -234,6 +263,11 @@ class ResultsTable:
 
     Several jobs may share the file (two pods on one network volume): ``save()`` merges
     under a lock instead of overwriting, so each job only ever replaces its own rows.
+
+    The games behind each model row go to ``games.csv`` next to it (plan v5 Step 12a), in
+    the same save and under the same lock. A model's games are replaced whenever its row
+    is, so the file always holds exactly the games behind the current rows -- a re-eval
+    (or a restarted eval) leaves no stale games.
     """
 
     # save() lock: a lock file older than this is assumed left behind by a crashed process.
@@ -243,9 +277,12 @@ class ResultsTable:
     def __init__(self, path: str | Path, specs=REFERENCE_SET):
         """Open ``path`` (created on first save). Pin rows always exist, even before a save."""
         self.path = Path(path)
+        self.games_path = self.path.with_name("games.csv")
         self.specs = specs
         self.rows: dict[str, dict] = self._read_rows()
         self._changed: set[str] = set()   # rows this instance wrote since its last save()
+        self._games: dict[tuple[str, str], list[dict]] = {}  # (kind, subject) -> rows to write at save()
+        self._eval_ids: dict[str, str] = {}                  # model name -> this instance's eval id
         self._add_pins(self.rows)
 
     def _read_rows(self) -> dict[str, dict]:
@@ -334,6 +371,13 @@ class ResultsTable:
         self.rows[name] = self._row(name, "model", estimate.rating, estimate.ci_low, estimate.ci_high,
                                     estimate.games, **fields)
         self._changed.add(name)
+        # The games behind this row (every batch passes all of the eval's records so far, so
+        # the latest call holds them all); one eval id per model per ResultsTable instance.
+        records = [r for r in records if name in (r.white, r.black)]
+        if records:
+            eval_id = self._eval_ids.setdefault(
+                name, f"{_dt.datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}")
+            self._games[("eval", name)] = game_rows(records, "eval", name, eval_id)
         return self.rows[name]
 
     @contextmanager
@@ -376,6 +420,8 @@ class ResultsTable:
         lock, the file is re-read and only the rows THIS instance wrote since its last
         save (log_model, add_reference) overwrite their disk version; every other row
         stays as the other jobs left it. Afterwards ``rows`` is the merged table.
+        games.csv is merged the same way, under the same lock: the games of each model
+        saved here replace that model's games on disk; every other game is kept.
         """
         order = {r: i for i, r in enumerate(ROLES)}
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -389,15 +435,36 @@ class ResultsTable:
                 merged[name] = self.rows[name]
             self._add_pins(merged)
             rows = sorted(merged.values(), key=lambda r: order[r["role"]])
-            # Unique temp name (pid + random suffix), so two writers never share one temp file.
-            tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
-            try:
-                with open(tmp, "w", newline="") as f:
-                    w = csv.DictWriter(f, fieldnames=RESULTS_COLUMNS)
-                    w.writeheader()
-                    w.writerows(rows)
-                os.replace(tmp, self.path)  # never leaves a half-written file behind
-            finally:
-                tmp.unlink(missing_ok=True)
+            self._write_csv(self.path, RESULTS_COLUMNS, rows)
+            if self._games:   # games.csv: replace the games of each subject saved here, keep all others
+                kept = [g for g in self._read_games() if (g["kind"], g["subject"]) not in self._games]
+                self._write_csv(self.games_path, GAMES_COLUMNS,
+                                kept + [g for rows_ in self._games.values() for g in rows_])
         self.rows = merged
         self._changed.clear()
+        self._games.clear()
+
+    def _read_games(self) -> list[dict]:
+        """games.csv rows as dicts ([] if the file doesn't exist yet)."""
+        if not self.games_path.exists():
+            return []
+        with open(self.games_path, newline="") as f:
+            return [{k: row.get(k, "") for k in GAMES_COLUMNS} for row in csv.DictReader(f)]
+
+    def games(self, subject: str | None = None, kind: str = "eval") -> list[dict]:
+        """Saved games from games.csv, optionally only one subject's (e.g. a model name)."""
+        return [g for g in self._read_games() if g["kind"] == kind and (subject is None or g["subject"] == subject)]
+
+    @staticmethod
+    def _write_csv(path: Path, columns: list[str], rows: list[dict]) -> None:
+        """Write via a uniquely named temp file + rename, so no reader ever sees half a file."""
+        # Unique temp name (pid + random suffix), so two writers never share one temp file.
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+        try:
+            with open(tmp, "w", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=columns)
+                w.writeheader()
+                w.writerows(rows)
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
