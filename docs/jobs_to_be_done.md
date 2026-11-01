@@ -42,10 +42,11 @@ Status: 🟢 core, load-bearing work for that step's milestone · 🟡 breadth o
 
 **Jobs to be done:**
 
-- **Label 500k positions the same way as the first 50k:** same Stockfish depth, label format, phase mix, at most one position per phase per game; the 50k set is an exact subset of the 500k. *(nested dataset)* — `data/`, `configs/data.yaml` — 🟢
-- **Keep one validation set for everything:** the existing by-game split, shared by every size and both architectures, with no validation game in any training set. — `data/dataset.py` — 🟢
-- **Check there are enough games:** count `2013-06`'s games first and add later Lichess months if needed, each pinned by checksum. — `data/download.py` — 🟢
-- **Label in parallel on a CPU-only pod:** ~10 CPU-hours, ~2 h on 5 CPUs or ~20 min on a 32-core pod, split into chunks if several pods share the work; CPU-hours logged and charged to every arm that trains on it. *(chunked labeling)* — `data/annotate.py` — 🟢
+- **Label 500k positions the same way as the first 50k:** same Stockfish depth, label format, phase mix, at most one position per phase per game; sampled fresh with the same code rather than extending the old 50k. *(fresh resample)* — `data/sample_positions.py`, `configs/data.yaml` — 🟢
+- **Keep one validation set for everything:** the 50k's existing validation positions, shared by every size and both architectures; the 500k sample skips those games and positions. — `data/dataset.py` — 🟢
+- **Read enough games:** `2013-06` alone can't fill 500k, so the sampler continues into `2013-07`, `2013-08`, … until full, each file checked against Lichess's checksum and recorded. — `data/download.py` — 🟢
+- **Check for near-win positions before changing the mix:** record each game's result and how it ended, and report per phase how many positions are near-wins or simple endings, so a conversion-enriched variant is built only if there's a gap. *(measure first)* — `data/sample_positions.py`, `01_build_dataset.ipynb` — 🟢
+- **Label on one many-core CPU-only pod:** ~10 CPU-hours, ~20–40 min on 32 vCPUs after ~1–2 h of single-threaded sampling, in its own repo clone; CPU-hours logged and charged to every arm that trains on it. — `data/annotate.py` — 🟢
 - **Decide on ~2M positions later:** only if CNN SFT gains clearly from 50k to 500k. — 🟡
 
 ## Step 14 — Imitation at scale: CNN SFT and LLM SFT

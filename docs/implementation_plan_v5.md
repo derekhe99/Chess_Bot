@@ -18,7 +18,10 @@ first. CNN size: start at 6 × 64. New Sec 4.1 says what can run in parallel and
 Step numbers are labels, not the running order (Sec 4).
 Later the same day: Step 13's small code prep runs before Step 12's build, so the 500k
 labeling (the long pole) runs while Step 12 is built (Derek, Oct 31; Sec 4). Step 16's
-config is set (cap 18).
+config is set (cap 18). Step 13 design (Derek, Oct 31): the 500k set is sampled fresh with
+the same rules (not nested), keeps the 50k's validation set, records each game's result
+and ending, and reports its share of near-win positions before any enrichment is
+considered; one CPU-only pod labels it (no multi-pod chunking).
 
 ---
 
@@ -142,8 +145,9 @@ Chess_Bot/
 ### 2.1 What each new or changed file does (v5)
 
 - **`data/annotate.py`** — already runs one Stockfish process per CPU core and resumes
-  after a stop. **To check in Step 13:** whether it can label one chunk of the positions
-  into its own output file, which splitting the work across pods needs (Sec 4.1).
+  after a stop; unchanged. Checked Oct 31: it can't split work across pods (it numbers
+  its output files by counting the existing ones, so two pods in one folder would
+  collide), so Step 13 labels on one many-core pod instead (Sec 4.1).
 - **`eval/match.py`** — also records every eval game (Step 12a) and gains
   `head_to_head(players, games_per_pair)`: color-swapped pairs over shared openings,
   every game recorded.
@@ -156,8 +160,11 @@ Chess_Bot/
 - **`model/llm_evaluator.py`** (v5) — wraps an LLM checkpoint as an `evaluate()` model:
   priors = softmax over its masked move scores, value = its value head's win
   probability. `model/llm_policy.py` stays unchanged.
-- **`data/`** — unchanged code, run again at a larger size (Step 13); `data.yaml` gains
-  the new size(s) and any added Lichess months.
+- **`data/`** (Step 13) — `download.py` streams several months in order;
+  `sample_positions.py` can skip given games and positions (the fixed validation set)
+  and records each game's result and how it ended; `dataset.py` gives the fixed
+  validation set; `data.yaml` gains a `scaled` block (500k, the months to read).
+  Notebook 01 builds either set (`BUILD`) and runs from whichever repo clone it is opened in.
 - **`train/cnn_sft.py`** (v5) — supervised training of `AZNet` on the Stockfish labels:
   policy cross-entropy vs. the label move (legal-masked, side-to-move frame), value BCE
   vs. the label win probability. Resumable; writes `train_log.csv` / `val_log.csv` with
@@ -191,8 +198,8 @@ checkpoint they wrap.
 Each step ends with a **gate**. Order from here:
 **Step 9 no-search evals → Step 12 → Step 13 → Step 14 → Step 15 → Step 11**, with
 **Step 16** run in the background whenever a pod is free. Several pieces overlap; Sec
-4.1 says which. **Build order (Derek, Oct 31):** Step 13's code prep (game count, nested
-500k sample, chunked labeling) comes before Step 12's build, so labeling starts on a
+4.1 says which. **Build order (Derek, Oct 31):** Step 13's code prep (fresh
+500k sample, labeling-pod setup) comes before Step 12's build, so labeling starts on a
 CPU-only pod while Step 12 is written; everything else follows the order above.
 
 **Step numbers are labels, not the running order.** Steps that exist keep their numbers,
@@ -228,16 +235,16 @@ those new models needs them trained; the head-to-head adds new arms as they fini
 
 **Labeling in parallel.** Every position is labeled independently, so the work splits
 cleanly. `annotate.py` already uses one Stockfish process per core and is resumable, so
-the only limit is cores: 500k ≈ 10 CPU-h is ~2 h on ~5 CPUs, or ~20 min on a 32-core CPU
-pod. Splitting across several pods also works, if each pod labels its own chunk into its
-own file and the files are merged afterwards (check `annotate.py` supports chunks first,
-Sec 2.1). Parallelism only shortens wall time: the CPU-hours charged to the arms stay
-~10 either way.
+the only limit is cores: 500k ≈ 10 CPU-h is ~2 h on ~5 CPUs, or ~20–40 min on a 32-vCPU
+CPU pod. **Decided Oct 31:** one many-core CPU-only pod, not several (splitting across
+pods would need chunked output, Sec 2.1). Sampling the positions first is
+single-threaded (~1–2 h of reading games). Parallelism only shortens wall time: the
+CPU-hours charged to the arms stay ~10 either way.
 
 **Several pods on one network volume.** A RunPod network volume can be attached to
 several pods at once in the same datacenter. Rules: (1) each pod writes its own output
 files; `results.csv` and `games.csv` are safe under concurrent writes (lock + merge),
-labeling output is not unless chunked; (2) one repo clone per pod when they run
+labeling output is not (one labeling pod per dataset folder); (2) one repo clone per pod when they run
 different code, so a checkout on one doesn't change the code under the other's job;
 (3) each budget watchdog uses the combined hourly rate of all running pods.
 
@@ -336,16 +343,35 @@ head-to-head round (3 pairs × 40 games) played and tabulated.
 - Same pipeline and settings as Step 3: Stockfish 19 at the same label depth, same label
   format (best move + win probability for the side to move), same phase mix, at most one
   position per phase per game, deduplicated.
-- **Nested sizes:** the existing 50k stays as is, and larger sets add positions from new
-  games, so every smaller set is a subset of every larger one. **Decided Oct 31: build
-  500k now.** Whether to build ~2M is decided after CNN SFT's 50k-vs-500k result
-  (Step 14): if 500k clearly helps, 2M is worth its cost; if not, it is skipped.
-- **Can start immediately**, in parallel with Step 12 (Sec 4.1), on a CPU-only pod.
-- **One fixed validation set** (the existing split, by game) shared by every size and
-  both architectures; no validation game appears in any training set.
-- **Source:** `2013-06` may not hold enough games for the larger sizes at ≤3 positions
-  per game; check its game count first, and add later Lichess months as needed (each
-  sha256-pinned in `data.yaml`).
+- **Sampled fresh, not nested (Derek, Oct 31).** The 500k set is drawn from scratch with
+  the same rules, so the 50k is not a subset of it (a clean rerun of the same code,
+  rather than extending the old sample; costs ~1 CPU-h to relabel positions the 50k
+  already had). Both sizes come from the same games and rules, so 50k vs. 500k still
+  isolates dataset size. **Decided Oct 31: build 500k now.** Whether to build ~2M is
+  decided after CNN SFT's 50k-vs-500k result (Step 14): if 500k clearly helps, 2M is
+  worth its cost; if not, it is skipped.
+- **Can start immediately**, in parallel with Step 12 (Sec 4.1), on a CPU-only pod
+  (`docs/runpod_runbook.md` section G; notebook 01 with `BUILD = "scaled"`).
+- **One fixed validation set:** the 50k's existing validation positions (~5k, its
+  by-game split), shared by every size and both architectures. The 500k sample skips
+  those games and those positions, so no validation game or position appears in any
+  training set; all 500k positions are training data.
+- **Source:** `2013-06` (~225k games) can't fill 500k at one position per phase per game
+  (the endgame quota, ~167k, is the limit, since many games end before an endgame). The
+  sampler reads `2013-06`, then `2013-07`, `2013-08`, … in order until every quota is
+  full, downloading each month only when reached. Each file is checked against Lichess's
+  published sha256, and the months used and their checksums are recorded in the
+  dataset's `sampling_stats.json`.
+- **Near-win positions (Derek, Oct 31, option A: measure first).** Goal: models should
+  learn to convert won positions, not stalemate them. The sampler controls the phase
+  mix but not how decisive a position is, which is only known after labeling. So each
+  position also records its game's result and how the game ended (checkmate, stalemate,
+  insufficient material, time, resignation/agreement); after labeling, notebook 01
+  reports per phase the share of near-win positions (win probability > 0.9 or < 0.1)
+  and of simple endings (≤ 6 pieces). Enrichment (e.g. a bucket from the last moves of
+  games that ended in checkmate) is considered only if these shares and Step 12's draw
+  types show a gap, as a separate dataset variant, so the 50k-vs-500k comparison stays
+  a pure size comparison.
 - **Cost:** ~1 CPU-h per 50k labels → 500k ≈ 10 CPU-h (~2 h wall on ~5 CPUs), 2M ≈ 40
   CPU-h (~8 h wall). Logged in each dataset's `manifest.json`; charged to every arm that
   trains on that size.
@@ -353,7 +379,8 @@ head-to-head round (3 pairs × 40 games) played and tabulated.
   games) is parked until Step 14's results show whether drift is a problem.
 
 *Gate:* the 500k set is labeled with its CPU-hours in the manifest; the phase mix
-matches; no train/validation game overlap; the 50k set is an exact subset.
+matches; no validation game or position in it; near-win and simple-ending shares
+reported per phase.
 
 ### Step 14 — Imitation at scale: CNN SFT and LLM SFT
 
@@ -464,8 +491,8 @@ both ways (`EVAL_NO_SEARCH = True`); launch per `docs/runpod_runbook.md` section
 2. ~~Re-eval scope~~ — the 10 headline checkpoints (Step 12e).
 3. ~~Head-to-head~~ — best-rated checkpoint per arm, 40 games per pair, colors swapped
    (Step 12d).
-4. ~~Dataset sizes~~ — 500k now; ~2M decided after CNN SFT's 50k-vs-500k result
-   (Step 13).
+4. ~~Dataset sizes~~ — 500k now, sampled fresh with the 50k's validation set; ~2M
+   decided after CNN SFT's 50k-vs-500k result (Step 13).
 5. **CNN size** — start at 6 × 64; add 10 × 128 only if CNN SFT plateaus (Step 14).
    The larger network itself is decided then.
 

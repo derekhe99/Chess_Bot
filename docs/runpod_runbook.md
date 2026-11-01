@@ -264,3 +264,77 @@ GPU-h (~9 more hours), then evals of up to 4 stage-2 checkpoints with and withou
 no-search ~0.5 h) + setup, ~12-13 pod-hours: `BAL` of about $10 or more. Restart the
 watchdog with your current balance before launching: an older timer may fire mid-run.
 
+
+## G. Labeling on a CPU-only pod (plan v5 Step 13: the 500k dataset)
+
+Labeling is CPU work (one Stockfish per core), so it runs on its own CPU-only pod with
+many vCPUs, attached to the same volume, while the L4 pod does other work (plan v5 Sec
+4.1: one CPU-heavy job per pod). The L4 pod runs code from `/workspace/Chess_Bot`, so
+this pod uses its own clone, `/workspace/Chess_Bot_data`; notebook 01 runs from
+whichever clone it is opened in.
+
+1. **Budget first: two pods bill at once.** Note the CPU pod's hourly rate on the deploy
+   page (`CPU_RATE`). On the L4 pod, the watchdog check (section A, Part 2) gives its
+   hours left. The balance must cover both plus the floor:
+   `$2 + (L4 hours left × 0.59) + (4 × CPU_RATE)`. Top up first if it doesn't. (The L4
+   pod's watchdog assumed it was the only pod billing.)
+2. **Deploy.** Pods, Deploy, CPU. Datacenter **EU-RO-1** with the `chess-ai` network
+   volume attached at `/workspace`; **16 vCPU** (Oct 31: sampling is single-threaded and
+   takes most of the time, so more vCPUs mostly sit idle; 16 labels 500k in ~45-60 min);
+   on-demand. Container disk **20 GB** (packages; 5 GB is tight). The template needs
+   Python 3.10+: prefer an Ubuntu 22.04 or 24.04 one; with Ubuntu 20.04 (Python 3.8)
+   check step 4's version line.
+3. **Watchdog: a fixed 4-hour cap** (the whole job should take ~2-3 h). In the pod
+   terminal:
+
+   ```
+   which runpodctl                      # must print a path; if not, set a 4 h phone timer and stop the pod by hand
+   pkill -f "runpodctl stop pod"
+   mkdir -p /workspace/chess-ai/logs
+   nohup bash -c "sleep 14400; runpodctl stop pod $RUNPOD_POD_ID" > /workspace/chess-ai/logs/watchdog_cpu.log 2>&1 &
+   ```
+
+4. **Code and packages.** The clone is made once; later sessions only update it.
+
+   ```
+   python3 --version                    # must be 3.10+; if not, `ls /usr/bin/python3.1*` and use that python
+   apt-get update && apt-get install -y tmux git
+   cd /workspace
+   [ -d Chess_Bot_data ] || git clone https://github.com/derekhe99/Chess_Bot.git Chess_Bot_data
+   cd /workspace/Chess_Bot_data
+   git fetch && git checkout step-13-data-scale && git reset --hard origin/step-13-data-scale
+   git log -1 --oneline
+   python3 -m pip install -q torch --index-url https://download.pytorch.org/whl/cpu
+   python3 -m pip install -q -r requirements.txt jupyter nbconvert
+   python3 -m pytest tests/test_data.py -q        # downloads Stockfish into this clone on first use
+   python3 -c "from data.annotate import usable_cpus; print(usable_cpus())"   # labeling workers: should match the vCPUs you chose
+   ```
+
+   The CPU-only torch (~200 MB) avoids the 2-3 GB GPU build; the dataset code imports
+   torch but never uses a GPU. `pip install` on the second line then finds torch already
+   there.
+5. **Timing run (~10 min):** 5,000 positions, to check speed, the month download, and the
+   near-win report before spending hours.
+
+   ```
+   tmux new -A -s label
+   cd /workspace/Chess_Bot_data
+   TIMING_RUN=1 jupyter nbconvert --to notebook --execute notebooks/01_build_dataset.ipynb \
+     --output-dir /workspace/chess-ai/logs --output 01_scaled_timing.ipynb \
+     --ExecutePreprocessor.timeout=-1
+   ```
+
+   Then print its output and send it to Claude (same snippet as section F step 5, with
+   `01_scaled_timing.ipynb` as the path). The lines that matter: the sampling counts,
+   `projected full dataset`, `GATE`, and the near-win table.
+6. **Full run (500k):** same command without `TIMING_RUN=1`, `--output 01_scaled_500k.ipynb`.
+   Detach (`Ctrl-b`, then `d`). It first reads games (single-threaded, ~1-2 h; nothing is
+   printed or saved until the sample is complete; it then writes `positions.parquet`),
+   then labels on every core (~20-40 min on 32 vCPUs). Progress while labeling:
+   `ls /workspace/chess-ai/data/processed/sft_scaled_d12_n500000/parts | wc -l`
+   (chunks of 250 positions; 2,000 = done). Labeling time is ~10 CPU-h / vCPUs.
+7. **Interrupted** (watchdog, closed session): run the same command again. A finished
+   sample is reused and finished chunks are kept; only an unfinished sample is redone.
+8. **Done:** send Claude the printed output (as in step 5, `01_scaled_500k.ipynb`), then
+   stop the CPU pod (`runpodctl stop pod $RUNPOD_POD_ID`, or Stop on the Pods page) and
+   terminate it from the Pods page: the data is on the volume.

@@ -17,9 +17,9 @@ import pytest
 import zstandard
 
 from data import download
-from data.annotate import annotate, load_labels
-from data.dataset import PositionDataset, load_datasets, split_by_game
-from data.sample_positions import (PHASES, PhaseRule, nonpawn_material, phase_quotas, position_key,
+from data.annotate import annotate, load_labels, usable_cpus
+from data.dataset import PositionDataset, fixed_split, load_datasets, near_win_report, split_by_game
+from data.sample_positions import (PHASES, PhaseRule, game_ending, nonpawn_material, phase_quotas, position_key,
                                    sample_positions, tag_phase)
 
 
@@ -76,6 +76,22 @@ def test_iter_games_streams_the_compressed_file(tmp_path):
     assert len(list(download.iter_games(path, max_games=2))) == 2
 
 
+def test_iter_months_reads_in_order_and_downloads_only_when_reached(tmp_path, monkeypatch):
+    files = {}
+    for k, month in enumerate(("2013-06", "2013-07", "2013-08")):
+        files[month] = tmp_path / download.lichess_filename(month)
+        write_zst(files[month], [random_game(10 * k + s) for s in range(3)])
+    opened = []
+    monkeypatch.setattr(download, "ensure_month", lambda m, d, verify=True: opened.append(m) or files[m])
+    used = []
+    games = download.iter_months(["2013-06", "2013-07", "2013-08"], tmp_path, used=used)
+    first_four = [next(games) for _ in range(4)]
+    assert opened == ["2013-06", "2013-07"]                                 # 2013-08 never fetched
+    assert [u["month"] for u in used] == ["2013-06", "2013-07"]
+    assert used[0]["sha256"] == download.sha256_file(files["2013-06"])
+    assert first_four[3].headers["Site"].endswith("g000010")                # first game of 2013-07
+
+
 # ------------------------------------------------------------- sampling ----
 
 def test_tag_phase():
@@ -120,6 +136,46 @@ def test_sample_fills_quotas_with_distinct_legal_positions():
     assert again == records                                                 # reproducible
 
 
+def test_game_ending():
+    def game(moves, termination="Normal"):
+        board = chess.Board()
+        for m in moves:
+            board.push_san(m)
+        g = chess.pgn.Game.from_board(board)
+        g.headers["Termination"] = termination
+        return g, board
+    assert game_ending(*game(["f3", "e5", "g4", "Qh4#"])) == "checkmate"
+    assert game_ending(*game(["e4"], "Time forfeit")) == "time"
+    assert game_ending(*game(["e4"])) == "resign_or_draw"
+    assert game_ending(*game(["e4"], "Abandoned")) == "other"
+    stalemate = chess.Board("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1")
+    assert game_ending(chess.pgn.Game(), stalemate) == "stalemate"
+    assert game_ending(chess.pgn.Game(), chess.Board("8/8/8/4k3/8/8/8/4K3 w - - 0 1")) == "insufficient_material"
+
+
+def test_sample_records_result_and_ending():
+    games = [random_game(s) for s in range(60)]
+    records, _ = sample_positions(iter(games), 30, {p: 1 / 3 for p in PHASES}, seed=1)
+    by_id = {g.headers["Site"].rsplit("/", 1)[-1]: g for g in games}
+    for r in records:
+        g = by_id[r["game_id"]]
+        assert r["result"] == g.headers["Result"]
+        assert r["ending"] == game_ending(g, g.end().board())
+
+
+def test_sample_skips_excluded_games_and_positions():
+    games = [random_game(s) for s in range(300)]
+    mix = {"opening": 0.3, "middlegame": 0.4, "endgame": 0.3}
+    base, _ = sample_positions(iter(games), 60, mix, seed=7)
+    held_games = {r["game_id"] for r in base[:20]}
+    held_keys = {position_key(chess.Board(r["fen"])) for r in base[:20]}
+    held_keys.add(position_key(chess.Board()))                             # a position every game passes through
+    records, stats = sample_positions(iter(games), 90, mix, seed=7, exclude_games=held_games, exclude_keys=held_keys)
+    assert stats["complete"] and stats["games_excluded"] == len(held_games)
+    assert not {r["game_id"] for r in records} & held_games
+    assert not {position_key(chess.Board(r["fen"])) for r in records} & held_keys
+
+
 def test_sample_reports_a_shortfall_instead_of_failing():
     games = [random_game(s) for s in range(5)]
     records, stats = sample_positions(iter(games), 1000, {p: 1 / 3 for p in PHASES})
@@ -147,6 +203,40 @@ def test_split_by_game_never_shares_a_game():
     assert train.equals(train2)
 
 
+def _distinct_fen(i: int) -> str:
+    """A different position for each i < 1000: black king on h8, white king and rook moved around."""
+    board = chess.Board(None)
+    board.set_piece_at(chess.H8, chess.Piece(chess.KING, chess.BLACK))
+    board.set_piece_at(i % 40, chess.Piece(chess.KING, chess.WHITE))           # squares a1..h5
+    board.set_piece_at(40 + i // 40 % 14, chess.Piece(chess.ROOK, chess.WHITE))  # a6..f7
+    return board.fen()
+
+
+def test_fixed_split_keeps_the_base_validation_set():
+    base = _labels_df(n_games=10, per_game=2)
+    base["fen"] = [_distinct_fen(i) for i in range(len(base))]
+    _, expected_val = split_by_game(base, 0.2, 0)
+    leak_game = expected_val["game_id"].iloc[0]
+    new = pd.DataFrame({"fen": [_distinct_fen(100 + i) for i in range(5)] + [expected_val["fen"].iloc[1]],
+                        "best_move": "a1a2", "win_prob": 0.5, "phase": "endgame",
+                        "game_id": ["n0", "n1", "n2", leak_game, "n4", "n5"]})
+    train, val = fixed_split(new, base, 0.2, 0)
+    assert val.equals(expected_val)                                         # the same validation set as before
+    assert list(train["game_id"]) == ["n0", "n1", "n2", "n4"]               # leaked game and position dropped
+
+
+def test_near_win_report():
+    df = pd.DataFrame({"fen": [chess.STARTING_FEN, chess.STARTING_FEN, "8/8/8/4k3/8/8/8/R3K3 w - - 0 1",
+                               "8/8/8/4k3/8/8/8/R3K3 b - - 0 1"],
+                       "win_prob": [0.5, 0.95, 0.99, 0.02], "phase": ["opening", "opening", "endgame", "endgame"],
+                       "ending": ["time", "checkmate", "checkmate", "resign_or_draw"]})
+    r = near_win_report(df)
+    assert r.loc["opening", "positions"] == 2 and r.loc["opening", "near_win"] == 0.5
+    assert r.loc["endgame", "near_win"] == 1.0 and r.loc["endgame", "simple_ending"] == 1.0
+    assert r.loc["all", "positions"] == 4 and r.loc["all", "from_checkmate_game"] == 0.5
+    assert "from_checkmate_game" not in near_win_report(df.drop(columns="ending"))
+
+
 def test_position_dataset_records(tmp_path):
     df = _labels_df(n_games=2, per_game=1)
     item = PositionDataset(df, "structured")[0]
@@ -161,6 +251,11 @@ def test_position_dataset_records(tmp_path):
 
 
 # ------------------------------------------------------------- labeling ----
+
+def test_usable_cpus_is_within_the_host_count():
+    import os
+    assert 1 <= usable_cpus() <= (os.cpu_count() or 1)
+
 
 try:
     from engine.stockfish import find_stockfish

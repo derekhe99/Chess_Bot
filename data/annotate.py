@@ -10,6 +10,7 @@ Main pieces:
 - annotate    -- label everything in parallel, saving each finished chunk to disk;
                  re-running skips chunks already saved (survives Colab disconnects)
 - load_labels -- read the saved labels back as one table
+- usable_cpus -- how many CPUs this container may really use (the worker count)
 
 Each label is from the point of view of the side to move: ``win_prob`` is that
 side's expected score (the value target decided in the design doc), and
@@ -21,6 +22,7 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import os
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
@@ -33,6 +35,29 @@ import pyarrow.parquet as pq
 from engine.stockfish import SF_VERSION, WIN_PROB_MODEL, Stockfish, find_stockfish
 
 LABEL_COLUMNS = ("best_move", "cp", "mate", "win_prob", "depth", "nodes")
+
+
+def usable_cpus() -> int:
+    """CPUs this process may actually use: the container's CPU quota, not the host's core count.
+
+    os.cpu_count() reports the whole host (48 on the L4 pod, whose container may use ~5),
+    so one worker per reported core would oversubscribe. Reads the cgroup quota (v2
+    cpu.max, or v1 cfs_quota_us / cfs_period_us) and the CPU affinity; uses the smallest.
+    """
+    limits = [len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count() or 1]
+    try:
+        quota, period = open("/sys/fs/cgroup/cpu.max").read().split()[:2]
+        if quota != "max":
+            limits.append(int(quota) / int(period))
+    except (OSError, ValueError):
+        try:
+            quota = int(open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us").read())
+            period = int(open("/sys/fs/cgroup/cpu/cpu.cfs_period_us").read())
+            if quota > 0:
+                limits.append(quota / period)
+        except (OSError, ValueError):
+            pass
+    return max(1, int(min(limits)))
 
 
 def label_chunk(job: tuple[list[dict], dict]) -> tuple[list[dict], float]:

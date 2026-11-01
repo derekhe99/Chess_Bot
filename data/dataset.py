@@ -9,6 +9,9 @@ same text (plan v3, Sec 2.1).
 
 Main pieces:
 - split_by_game   -- train/validation split where no game lands on both sides
+- fixed_split     -- (Step 13) any dataset's training rows + the ONE validation set
+                     every size and architecture shares (the 50k's validation split)
+- near_win_report -- (Step 13) per phase: how many positions are near-wins or simple endings
 - PositionDataset -- PyTorch Dataset of plain records for one representation
 - load_datasets   -- labels.parquet -> (train, validation) datasets
 """
@@ -39,6 +42,48 @@ def split_by_game(df: pd.DataFrame, val_fraction: float = 0.1, seed: int = 0) ->
     val_games = set(games[: round(len(games) * val_fraction)])
     is_val = df["game_id"].isin(val_games)
     return df[~is_val].reset_index(drop=True), df[is_val].reset_index(drop=True)
+
+
+def fixed_split(df: pd.DataFrame, base_df: pd.DataFrame, val_fraction: float = 0.1,
+                seed: int = 0) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Training rows of ``df`` and the fixed validation set taken from ``base_df``.
+
+    The validation set is exactly ``split_by_game(base_df, val_fraction, seed)``'s
+    validation half -- the 50k dataset's, unchanged since Step 3 -- so models trained on
+    any dataset size are scored on the same positions (plan v5 Step 13). Rows of ``df``
+    from a validation game, or repeating a validation position, are dropped from
+    training (the Step 13 sampler already skips them; this is the safety net).
+    """
+    from data.sample_positions import position_key  # local: keeps dataset.py light to import
+    _, val_df = split_by_game(base_df, val_fraction, seed)
+    val_games = set(val_df["game_id"])
+    val_keys = {position_key(chess.Board(f)) for f in val_df["fen"]}
+    keys = df["fen"].map(lambda f: position_key(chess.Board(f)))
+    keep = ~df["game_id"].isin(val_games) & ~keys.isin(val_keys)
+    return df[keep].reset_index(drop=True), val_df
+
+
+def near_win_report(df: pd.DataFrame, near: float = 0.9, simple_pieces: int = 6) -> pd.DataFrame:
+    """Per phase: positions, share near-won or near-lost, share of simple endings.
+
+    near_win: Stockfish's win probability for the side to move is above ``near`` or
+    below 1 - ``near`` (one side is close to winning; the label shows how to convert or
+    defend). simple_ending: at most ``simple_pieces`` pieces on the board, kings
+    included (e.g. king + rook vs. king + pawn). Also, if the dataset has the Step 13
+    ``ending`` column, the share of positions from games that ended in checkmate.
+    Used to decide whether a conversion-enriched variant is needed (plan v5 Step 13).
+    """
+    out = df.assign(near_win=(df["win_prob"] > near) | (df["win_prob"] < 1 - near),
+                    simple_ending=df["fen"].map(lambda f: len(chess.Board(f).piece_map()) <= simple_pieces))
+    cols = {"positions": ("fen", "size"), "near_win": ("near_win", "mean"),
+            "simple_ending": ("simple_ending", "mean")}
+    if "ending" in df:
+        out["from_checkmate_game"] = df["ending"] == "checkmate"
+        cols["from_checkmate_game"] = ("from_checkmate_game", "mean")
+    table = out.groupby("phase").agg(**cols)
+    table.loc["all"] = out.agg({c: f for c, f in cols.values()}).rename(
+        {c: name for name, (c, _) in cols.items()})
+    return table.round(3)
 
 
 class PositionDataset(Dataset):

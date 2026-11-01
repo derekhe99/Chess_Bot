@@ -111,6 +111,11 @@ Rules:
   - Step 16 (AlphaZero stage 2) runs in the background on a free pod: `max_gpu_hours: 18`
     set Oct 31, resumes `az_b6c64_s0` from round 53, evals with and without search, same
     opponents.
+  - Step 13 (Derek, Oct 31): 500k sampled fresh with the same rules (not nested), keeping the
+    50k's validation set (its games and positions excluded from the 500k); reads `2013-06`
+    then later months until full; records each game's result and ending and reports near-win
+    shares before any enrichment (option A); labeled on one many-core CPU-only pod with its
+    own repo clone. Branch `step-13-data-scale`.
   - Pods: one CPU-heavy job per pod; two pods at once means one repo clone per pod on the
     volume and watchdogs on the combined rate (plan Sec 1, 4.1).
 
