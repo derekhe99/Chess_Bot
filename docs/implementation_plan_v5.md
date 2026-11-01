@@ -24,7 +24,10 @@ and ending, and reports its share of near-win positions before any enrichment is
 considered; one CPU-only pod labels it (no multi-pod chunking).
 **Update, Nov 1, 2026:** the 500k set is labeled (3.10 CPU-h, Step 13). LLM SFT on 500k:
 capped at 2 passes (Derek; Sec 5 item 8), the Step 5 recipe otherwise unchanged, on its own
-L4 pod while AlphaZero stage 2 runs (Step 14).
+L4 pod while AlphaZero stage 2 runs (Step 14). Later: Step 16 done (AlphaZero to 18 GPU-h,
+r109 798 with search). Step 12 (a)–(b) built; **the 500k SFT checkpoints are rated next,
+before Step 12 (c)–(e)** (Derek), with (a)–(b)'s per-game records: `step-12-eval-v2` is
+merged into `step-14-sft-scale` for that.
 
 ---
 
@@ -204,6 +207,8 @@ Each step ends with a **gate**. Order from here:
 4.1 says which. **Build order (Derek, Oct 31):** Step 13's code prep (fresh
 500k sample, labeling-pod setup) comes before Step 12's build, so labeling starts on a
 CPU-only pod while Step 12 is written; everything else follows the order above.
+**Nov 1 (Derek):** after Step 12 (a)–(b), the 500k LLM SFT checkpoints are rated first (with
+full records), then Step 12 (c)–(e).
 
 **Step numbers are labels, not the running order.** Steps that exist keep their numbers,
 so references in this plan, CLAUDE.md, notes and git history ("Step 9 gate met") stay
@@ -433,6 +438,24 @@ side. *Branch:* `step-14-sft-scale`.
   `RUN_TRAINING`, `RUN_EVAL` from the shell) on its own L4 pod and repo clone
   (`docs/runpod_runbook.md` section H). Training examples are stored as int64 arrays
   (same values, ~3 GB instead of ~12 GB of RAM for 500k).
+  *Running (launched Nov 1, 1.13 s/step).* Validation (the fixed 50k split) so far:
+
+  | step | passes | val move loss | val value loss | top-1 vs Stockfish |
+  |---|---|---|---|---|
+  | 5,000 | 0.16 | 3.157 | 0.550 | 24.0% |
+  | 10,000 | 0.32 | 2.919 | 0.545 | 26.5% |
+  | 15,000 | 0.48 | 2.800 | 0.537 | 30.0% |
+  | 20,000 | 0.64 | 2.749 | 0.563 | 30.5% |
+  | 25,000 | 0.80 | 2.661 | 0.530 | 31.0% |
+  | 30,000 | 0.96 | 2.589 | 0.523 | 31.5% |
+
+  Already below the 50k run's best (2.84 at its step 15k, after ~5 passes) by step 15k, and
+  still falling with no sign of overfitting: more data is helping, as v5 predicted.
+  **Evals (Nov 1, Derek: before Step 12 (c)–(e)):** steps 10k, 20k, 30k (≈ 1 pass) first,
+  vs. `greedy`, `step_20000`, `sf_1320` (20 games each, as the 50k SFT evals), with full
+  records; later 45k and the final step (62.5k), plus the lowest-validation-loss one if it is
+  not among them; `sf_1500` added if a checkpoint scores well against `sf_1320`. Notebook 02
+  with `RUN_TRAINING=0 RUN_EVAL=1 EVAL_STEPS=...` on a separate pod (runbook section I).
 - **Eval:** 3–4 checkpoints per run, no search (`NoSearchAgent` for the CNN; the existing
   masked argmax for the LLM, which is the same rule), with full records, into
   `results.csv`. Pick the lowest-validation-loss checkpoint plus evenly spaced ones.
@@ -481,7 +504,26 @@ and stage 1–2 is the clean baseline.
 *Set up (Oct 31):* `configs/alphazero.yaml` has `max_gpu_hours: 18`; notebook 05 evaluates
 both ways (`EVAL_NO_SEARCH = True`); launch per `docs/runpod_runbook.md` section F (stage 2).
 
-*Gate:* the stage-2 checkpoints rated both ways; it joins the head-to-head.
+*Result (Nov 1):* 109 rounds, 18.04 GPU-h. 60 games each vs. `random`, `greedy`,
+`step_20000` (rated before Step 12, so no per-game records):
+
+| round | GPU-h | with search (50 sims) | no search | search adds |
+|---|---|---|---|---|
+| r55 | 9.45 | 697 [659, 735] | 647 [611, 684] | +50 |
+| r75 | 12.73 | 769 [722, 829] | 659 [629, 690] | +110 |
+| r90 | 15.02 | 769 [722, 821] | 659 [617, 703] | +110 |
+| r109 | 18.04 | 798 [755, 853] | 666 [629, 703] | +132 |
+
+Reading: with search it keeps climbing, 729 (r53) → 798 (r109), z ≈ 2.3, now the
+highest-rated model in the project; the network alone barely moves (641 → 666, within
+noise). So stage 2's gain comes mostly from search getting more out of the network (search
+adds ~90 at stage 1, ~130 by r109), consistent with a better value head guiding the tree.
+r75 and r90 rate identically (twice) because they scored the same against each opponent
+(their CIs differ, so the games did); with draw-heavy, 20-game pairings, equal scores are
+not rare. r109 replaces r53 in the head-to-head (Step 12d). Stage 3 (30 GPU-h): open
+(Sec 5 item 8).
+
+*Gate:* the stage-2 checkpoints rated both ways (met Nov 1); it joins the head-to-head.
 
 ### Deferred
 

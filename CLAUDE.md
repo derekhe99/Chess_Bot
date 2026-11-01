@@ -108,9 +108,13 @@ Rules:
     search switch, head-to-head) is built; then Step 12's 10 headline re-evals and first
     head-to-head, LLM SFT 25k with 16-simulation search (Step 15), CNN SFT on 50k (Step 14);
     then 500k training (Step 14) and search on those models (Step 15); Step 11 last.
-  - Step 16 (AlphaZero stage 2) runs in the background on a free pod: `max_gpu_hours: 18`
-    set Oct 31, resumes `az_b6c64_s0` from round 53, evals with and without search, same
-    opponents.
+  - Step 16 (AlphaZero stage 2) — done (Nov 1): 109 rounds, 18.04 GPU-h. With search r55 697,
+    r75 769, r90 769, r109 798 (highest in the project); no search 647-666 (flat). Search adds
+    ~+130 by r109 (vs ~+90 at stage 1). r109 replaces r53 in the head-to-head.
+  - Step 12 (a)-(b) built Nov 1 (branch `step-12-eval-v2`): `results/games.csv` (one row per
+    eval game, written by `ResultsTable.log_model`/`save`, replaced with its row) and
+    wins/draws/losses + dataset_size columns. Derek: rate the 500k SFT checkpoints next (Step 12
+    merged into Step 14 for that), then Step 12 (c)-(e).
   - Step 13 (Derek, Oct 31): 500k sampled fresh with the same rules (not nested), keeping the
     50k's validation set (its games and positions excluded from the 500k); reads `2013-06`
     then later months until full; records each game's result and ending and reports near-win
@@ -121,8 +125,9 @@ Rules:
   - Step 14, LLM SFT on 500k (Derek, Nov 1): Step 5 recipe, 2 passes (~19 GPU-h cap),
     fixed 50k validation (`val_from`), `configs/sft_500k.yaml`, notebook 02 with
     `SFT_CONFIG` / `RUN_TRAINING` / `RUN_EVAL` from the shell, own L4 pod + clone
-    (`/workspace/Chess_Bot_sft`, runbook H). Rated later with Step 12's records (1-pass and
-    2-pass checkpoints). Branch `step-14-sft-scale`.
+    (`/workspace/Chess_Bot_sft`, runbook H). Launched Nov 1; val move loss 2.59 at step 30k
+    (Step 5's best: 2.84). Evals: 10k, 20k, 30k first (greedy, step_20000, sf_1320; runbook I),
+    later 45k + final. Branch `step-14-sft-scale`.
   - Pods: one CPU-heavy job per pod; two pods at once means one repo clone per pod on the
     volume and watchdogs on the combined rate (plan Sec 1, 4.1).
 

@@ -412,3 +412,45 @@ checkpoint validations.
 8. **Done** (the prompt is back; `summary.json` in the run folder): send Claude the
    `val_log.csv` table, then stop the pod. Checkpoints are rated later, with Step 12's
    per-game records.
+
+## I. Rating LLM SFT checkpoints with full records (plan v5 Step 14 evals)
+
+Rates chosen checkpoints of an SFT run against the reference set; every game goes to
+`results/games.csv` and each row gets wins/draws/losses (Step 12a-b). Runs on a pod that is
+**not** training (sharing would slow the training run and distort its GPU-hours and this
+eval's sec/move), from a clone that is not in use by another pod's job. The 500k run's
+checkpoints can be rated while it is still training: they are read-only once saved.
+
+1. **Pod and watchdog:** a free L4 pod (or a new one, section B), watchdog per section A with
+   the combined rate of all running pods. ~1 h per checkpoint (60 games).
+2. **Code** (here the original clone, `/workspace/Chess_Bot`, free since AlphaZero finished):
+
+   ```
+   cd /workspace/Chess_Bot
+   git fetch && git checkout step-14-sft-scale && git reset --hard origin/step-14-sft-scale
+   git log -1 --oneline
+   pip install -q -r requirements.txt
+   python -m pytest tests/test_eval.py tests/test_sft.py -q
+   ```
+
+3. **Run** (paste `tmux new -A -s eval` on its own first, then the rest inside tmux):
+
+   ```
+   cd /workspace/Chess_Bot
+   SFT_CONFIG=configs/sft_500k.yaml RUN_TRAINING=0 RUN_EVAL=1 EVAL_STEPS=10000,20000,30000 \
+     jupyter nbconvert --to notebook --execute notebooks/02_train_sft.ipynb \
+     --output-dir /workspace/chess-ai/logs --output 02_sft500k_eval_$(date +%m%d_%H%M).ipynb \
+     --ExecutePreprocessor.timeout=-1
+   ```
+
+   `OPPONENTS=...` overrides the default `greedy,step_20000,sf_1320`. A checkpoint already
+   rated with its full game count is skipped, so a rerun continues where it stopped.
+4. **Results:** the rows (`results.csv`, name `<run>@<step>`) and their games
+   (`games.csv`, `subject` = that name):
+
+   ```
+   python -c "import pandas as pd; d=pd.read_csv('/workspace/chess-ai/results/results.csv'); print(d[d.name.str.contains('scaled_d12_n500000')][['name','rating','ci_low','ci_high','games','wins','draws','losses','train_gpu_hours','sec_per_move']].to_string())"
+   python -c "import pandas as pd; g=pd.read_csv('/workspace/chess-ai/results/games.csv'); g=g[g.subject.str.contains('scaled_d12_n500000')]; print(g.groupby(['subject','termination']).size().unstack(fill_value=0).to_string())"
+   ```
+
+   Send both to Claude, then stop the pod if nothing else is planned.
