@@ -65,6 +65,9 @@ jupyter nbconvert --to notebook --execute $NOTEBOOK \
   --ExecutePreprocessor.timeout=-1
 ```
 
+- **Paste `tmux new -A -s job` on its own first**, wait for tmux's green bar at the bottom, then
+  paste the rest. Pasted as one block, the lines after it can run in the plain shell, outside tmux
+  (seen Nov 1), where a closed terminal kills the job.
 - `tmux new -A -s job` opens the `job` session, attaching to it if it already exists (e.g. left over
   from an earlier job), so it never fails with "duplicate session". Check the prompt is back (no job
   still running in that window) before pasting the next command.
@@ -349,16 +352,17 @@ Length: 2 passes, ~62k steps, ~19 GPU-h of training, ~21 h of pod time with setu
 checkpoint validations.
 
 1. **Budget: two L4 pods bill $1.18/h together** while another L4 job runs. The balance must
-   cover `$2 + (the other pod's hours left × 0.59) + (22 × 0.59)` ≈ $15 + the other pod's
+   cover `$2 + (the other pod's hours left × 0.59) + (24 × 0.59)` ≈ $16 + the other pod's
    share. Top up first if it doesn't. Terminate stopped pods you no longer need (Pods page).
 2. **Deploy** an L4 pod as in section B (EU-RO-1, `chess-ai` volume at `/workspace`, the
    usual PyTorch template, `HF_TOKEN` optional).
-3. **Watchdog: a fixed 22-hour cap.**
+3. **Watchdog: a fixed 24-hour cap** (the smoke test measured 1.13 s/step: ~19.6 GPU-h of
+   training + validations + tokenizing ≈ 21 h).
 
    ```
    pkill -f "runpodctl stop pod"
    mkdir -p /workspace/chess-ai/logs
-   nohup bash -c "sleep 79200; runpodctl stop pod $RUNPOD_POD_ID" > /workspace/chess-ai/logs/watchdog_sft.log 2>&1 &
+   nohup bash -c "sleep 86400; runpodctl stop pod $RUNPOD_POD_ID" > /workspace/chess-ai/logs/watchdog_sft.log 2>&1 &
    ```
 
 4. **Code and packages** (the clone is made once; never touch `/workspace/Chess_Bot` from
