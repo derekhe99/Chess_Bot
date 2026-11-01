@@ -138,6 +138,7 @@ Chess_Bot/
   notebooks/
     00_setup  01_build_dataset  02_train_sft  03_evaluate  04_train_llm_rl
     05_train_alphazero  06_analysis  07_train_cnn_sft (v5)  08_head_to_head (v5)
+    09_rerate_with_records (v5)
   tests/    test_engine  test_data  test_llm_policy  test_sft  test_eval  test_mcts
             test_az  test_plots  test_cnn_sft (v5)  test_agents (v5)
 ```
@@ -326,18 +327,24 @@ Q1–Q4 below. *Branch:* `step-12-eval-v2` from `main`.
   run's step 30k (`structured_masked_nall_e2_s0_scaled_d12_n500000@30000`, end of pass 1)
   instead of the 50k run's 15k: the latest SFT, chosen by validation loss (2.59 vs. 2.84)
   before its Elo exists. It is also in the 500k eval list, so it gets a rating too.
-- **(e) Re-evaluate the headline checkpoints with full records** (decided Oct 31,
-  10 checkpoints): SFT 15k (best) and 25k (last); the last checkpoint (r20) of each RL
-  run 1–4; AlphaZero r5, r20, r40, r53. Same opponents (`random`, `greedy`,
-  `step_20000`) and games as their first evals; only what is saved changes (every game,
-  with how it ended). Their Elo will shift slightly from fresh-game noise; the new rows
-  replace the old ones. The other model rows keep their existing ratings without W/D/L.
+- **(e) Re-evaluate the headline checkpoints with full records.** **Scope (Derek, Nov 1;
+  was 10 on Oct 31): 7 checkpoints:** SFT 15k (the 50k run's best); the last checkpoint
+  (r20) of each RL run 1–4; AlphaZero r5 and r53 (the ends of stage 1). Dropped: SFT 25k,
+  AlphaZero r20 and r40 (saves ~3 h of the ~9). Same opponents and game counts as their
+  first evals (LLM rows: `greedy`, `step_20000`, `sf_1320`; AlphaZero: `random`, `greedy`,
+  `step_20000`; 20 games each), same openings (seed 0); only what is saved changes (every
+  game, with how it ended). Games against deterministic opponents may replay exactly;
+  games against time-limited Stockfish won't, so ratings can shift slightly. The new rows
+  replace the old ones, and each new row's note keeps the old rating. The other model rows
+  keep their existing ratings without W/D/L. Notebook `09_rerate_with_records`
+  (`eval.agents.rerate`), resumable: a checkpoint with a full set of saved games is
+  skipped. ~6 h of L4 time (~1 h per LLM checkpoint, ~30–45 min per AlphaZero one).
 
 *Tests:* a match writes one record per game with the right termination; W/D/L in the
 row equals the sum of its records; concurrent writers lose nothing; `NoSearchAgent` and
 `MCTSAgent` play only legal moves and are deterministic for a fixed seed;
 `head_to_head` swaps colors and covers every pair.
-*Gate:* tests pass; the 10 headline checkpoints re-rated with full records; the first
+*Gate:* tests pass; the 7 headline checkpoints re-rated with full records; the first
 head-to-head round (3 pairs × 40 games) played and tabulated.
 
 ### Step 13 — Scaled imitation dataset
@@ -492,7 +499,7 @@ both ways (`EVAL_NO_SEARCH = True`); launch per `docs/runpod_runbook.md` section
 **Decided Oct 31 (Derek):**
 1. ~~Per-game record~~ — `results/games.csv` (one row per game) behind `results.csv`,
    which gains W/D/L and stays the single summary file (Step 12a).
-2. ~~Re-eval scope~~ — the 10 headline checkpoints (Step 12e).
+2. ~~Re-eval scope~~ — 7 headline checkpoints (Step 12e; narrowed from 10 on Nov 1).
 3. ~~Head-to-head~~ — best-rated checkpoint per arm, 40 games per pair, colors swapped
    (Step 12d).
 4. ~~Dataset sizes~~ — 500k now, sampled fresh with the 50k's validation set; ~2M

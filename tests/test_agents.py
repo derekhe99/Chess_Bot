@@ -170,3 +170,33 @@ def test_load_player_alphazero_both_ways(tmp_path):
     assert checkpoint_dir({"kind": "sft", "run": "r", "step": 15000}, tmp_path).name == "step_015000"
     with pytest.raises(FileNotFoundError):
         load_player({**spec, "step": 4}, tmp_path)
+
+
+# ------------------------------------------------------- re-rating (Step 12e) ----
+
+def test_rerate_replaces_the_row_keeps_its_facts_and_saves_every_game(tmp_path):
+    from eval.agents import is_rerated, rerate
+    from eval.anchors import GreedyAgent
+    from eval.elo import RatingEstimate
+    path = tmp_path / "results.csv"
+    t = ResultsTable(path)
+    t.add_reference("random", 525.0, 450.0, 600.0, 100, spec={"kind": "random"})
+    t.add_reference("greedy", 641.0, 580.0, 700.0, 100, spec={"kind": "greedy"})
+    t.log_model(RatingEstimate("sft@15000", 706.0, 664.0, 748.0, 60, 0.5, None),     # an old row: no games saved
+                run="sft_run", step=15000, seed=0, train_gpu_hours=4.61, label_cpu_hours=0.99, note="Step 6")
+    t.save()
+    assert not is_rerated(ResultsTable(path), "sft@15000", 4)
+    spec = {"name": "sft@15000", "kind": "sft", "run": "sft_run", "step": 15000, "dataset_size": 44982}
+    opponents = {"random": RandomAgent("random", seed=1), "greedy": GreedyAgent("greedy", seed=2)}
+    for _ in range(2):                                                         # a second run doesn't stack notes
+        rerate(spec, ResultsTable(path), tmp_path, opponents, games_per_opponent=2, batch_games=2, gpu="test",
+               n_boot=20, verbose=False, load=lambda s, root: RandomAgent(s["name"], seed=7))
+    t2 = ResultsTable(path)
+    row = t2.rows["sft@15000"]
+    assert row["games"] == "4" and int(row["wins"]) + int(row["draws"]) + int(row["losses"]) == 4
+    assert (row["run"], row["step"], row["train_gpu_hours"], row["label_cpu_hours"]) == ("sft_run", "15000", "4.61", "0.99")
+    assert row["dataset_size"] == "44982" and row["gpu"] == "test"
+    assert row["note"].count("re-rated with records (was 706.0 [664.0, 748.0], 60 games)") == 1
+    assert len(t2.games("sft@15000")) == 4 and is_rerated(t2, "sft@15000", 4)
+    with pytest.raises(ValueError):
+        rerate({**spec, "name": "greedy"}, t2, tmp_path, opponents, load=lambda s, r: None)

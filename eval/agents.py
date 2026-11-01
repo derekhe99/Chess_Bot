@@ -21,6 +21,8 @@ Main pieces:
 - agent_name    -- the results.csv row name for a search setting (plan v5 Sec 2.2)
 - load_player   -- a saved checkpoint of any arm, by a plain spec, as a playable agent
                    (the head-to-head and later re-evals load players this way)
+- rerate        -- (Step 12e) re-rate an existing model row with every game saved; the
+                   new row replaces the old one and its note keeps the old rating
 
 Every agent follows the harness's Agent interface (eval/match.py): ``name`` and
 ``select_move(board) -> UCI``. Its search budget is its inference cost: it shows up in
@@ -126,3 +128,53 @@ def load_player(spec: dict, artifact_root: str | Path, *, device=None):
     _, _, mcts_cfg, _ = load_configs()
     sims = int(spec.get("simulations", mcts_cfg.simulations))
     return make_agent(AZEvaluator(net, next(net.parameters()).device), spec["name"], sims, mcts_cfg)
+
+
+# Row fields a re-rating carries over from the old row (everything that describes the
+# checkpoint, not the eval): the Elo, CI, games, W/D/L, speed and date are re-measured.
+CARRIED_FIELDS = ("run", "step", "seed", "train_gpu_hours", "label_cpu_hours", "dataset_size")
+
+
+def is_rerated(results, name: str, games: int) -> bool:
+    """True if ``name``'s row already has W/D/L (rated with records) and its full game count."""
+    row = results.rows.get(name)
+    return bool(row and row.get("wins") not in ("", None) and int(row["games"] or 0) >= games)
+
+
+def rerate(spec: dict, results, artifact_root, opponents: dict, *, games_per_opponent: int = 20,
+           batch_games: int = 10, gpu: str = "", n_boot: int = 1000, load=None, verbose: bool = True):
+    """Re-rate one existing model row with full records (plan v5 Step 12e). Returns the estimate.
+
+    spec: a load_player spec whose ``name`` is an existing model row; optional
+    ``dataset_size`` fills that column (blank on rows rated before Step 12).
+    opponents: {name: agent}, the same reference members the row was first rated against.
+    The checkpoint plays ``games_per_opponent`` games against each (same openings as the
+    first eval: seed 0), in batches; after every batch the row is overwritten (Elo, CI,
+    W/D/L, sec/move, this pod's GPU) and its games replace any saved ones, so a stop keeps
+    the last batch. Fields that describe the checkpoint (CARRIED_FIELDS) are carried over,
+    and the note gains the old rating.
+    """
+    from eval.match import evaluate_agent
+    name = spec["name"]
+    if results.role(name) != "model":
+        raise ValueError(f"{name!r} is not a model row in {results.path}; nothing to re-rate")
+    old = dict(results.rows[name])
+    keep = {k: old[k] for k in CARRIED_FIELDS if old.get(k) not in ("", None)}
+    if spec.get("dataset_size") is not None:
+        keep["dataset_size"] = spec["dataset_size"]
+    note = old.get("note", "")
+    if "re-rated with records" not in note:   # first re-rating: remember the old rating
+        note = (f"{note}; " if note else "") + (f"re-rated with records (was {old['rating']} "
+                                                f"[{old['ci_low']}, {old['ci_high']}], {old['games']} games)")
+    agent = (load or load_player)(spec, artifact_root)
+
+    def save(est, recs):
+        results.log_model(est, recs, gpu=gpu, note=note, **keep)
+        results.save()
+
+    try:
+        est, _ = evaluate_agent(agent, opponents, results.fixed(), games_per_opponent, batch_games=batch_games,
+                                on_batch=save, n_boot=n_boot, verbose=verbose)
+    finally:
+        del agent
+    return est
