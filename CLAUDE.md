@@ -116,7 +116,8 @@ Rules:
     then later months until full; records each game's result and ending and reports near-win
     shares before any enrichment (option A); labeled on one many-core CPU-only pod with its
     own repo clone. Branch `step-13-data-scale`. Labeled Oct 31: `sft_scaled_d12_n500000`,
-    500,000 positions, 3.10 CPU-h (13.7 min on 16 vCPU); gate output to record.
+    500,000 positions, 3.10 CPU-h (13.7 min on 16 vCPU); gate met. Near-wins 32.5% of positions
+    (endgames 54%), simple endings 4.1%: no enrichment now (revisit with Step 12's draw types).
   - Step 14, LLM SFT on 500k (Derek, Nov 1): Step 5 recipe, 2 passes (~19 GPU-h cap),
     fixed 50k validation (`val_from`), `configs/sft_500k.yaml`, notebook 02 with
     `SFT_CONFIG` / `RUN_TRAINING` / `RUN_EVAL` from the shell, own L4 pod + clone

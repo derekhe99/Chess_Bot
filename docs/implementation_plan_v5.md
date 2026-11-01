@@ -387,8 +387,23 @@ reported per phase.
 
 *Result (Oct 31):* `sft_scaled_d12_n500000`: 500,000 positions (opening 166,650 /
 middlegame 166,700 / endgame 166,650); Stockfish 3.10 CPU-h (11,150 s, 0.022 s/position);
-labeling 13.7 min wall on a 16-vCPU CPU pod. Gate checks and the near-win table: from
-the notebook's printed output (to record here).
+labeling 13.7 min wall on a 16-vCPU CPU pod. **Gate met** (all 7 checks pass; the fixed
+validation set is the 50k's 5,018 positions, none of them or their games in the 500k).
+
+Near-win check (option A), share of positions:
+
+| phase | near-win (win prob > 0.9 or < 0.1) | simple ending (≤ 6 pieces) | from a game that ended in checkmate |
+|---|---|---|---|
+| opening | 0.061 | 0.000 | 0.270 |
+| middlegame | 0.373 | 0.003 | 0.274 |
+| endgame | 0.541 | 0.119 | 0.212 |
+| all | 0.325 | 0.041 | 0.252 |
+
+Game endings: resignation/draw 41%, time 31%, checkmate 25%, insufficient material 1.2%,
+stalemate 1.1%. Reading: ~162k near-decisive positions (~90k of them endgames) and ~20k
+simple endings, each labeled with Stockfish's best move, so the data already holds many
+conversion examples; no enrichment now. Revisit only if Step 12's draw types show
+models still failing to convert won positions.
 
 ### Step 14 — Imitation at scale: CNN SFT and LLM SFT
 
