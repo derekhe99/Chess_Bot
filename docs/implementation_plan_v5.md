@@ -466,26 +466,47 @@ both ways (`EVAL_NO_SEARCH = True`); launch per `docs/runpod_runbook.md` section
 
 *Gate:* the stage-2 checkpoints rated both ways; it joins the head-to-head.
 
-### Step 17 — LLM self-play with search from SFT, compute-matched against more SFT
+### Step 17 — Self-play LLM with search vs. more SFT, at equal compute
 
 *Serves:* Q4 for the LLM (imitation vs. self-play from the same start, at equal compute)
-and Q3 (search during training vs. only at play). *Added Nov 1 (Derek); the
-high-priority item after the 500k evals. Branch:* `step-17-llm-mcts` (cut from
-`step-12-eval-v2`, which has the search switch).
+and Q3 (what search adds, and whether training with it changes that). *Added Nov 1
+(Derek); the high-priority item after the 500k evals. Branch:* `step-17-llm-mcts` (cut
+from `step-12-eval-v2`, which has the search switch).
 
-- **Design (Derek, Nov 1).** Phase 1 = imitation: the 500k SFT run to step 30k (end of
-  pass 1, ~9.6 GPU-h). From there, two arms with the same extra compute:
-  - **Arm 1 (this step):** AlphaZero-style training with the LLM as the network. Rounds
-    of self-play games with MCTS; the policy learns the search's root visit distribution
-    over legal moves (cross-entropy of the LLM's masked move distribution), the value head
-    learns the game result for the side to move. Continues the SFT LoRA adapters.
-  - **Arm 2:** SFT pass 2, i.e. the running 500k run from step 30k to its end. Already
-    running; costs nothing extra.
-  - **Budget:** arm 1 gets exactly the training GPU-hours pass 2 used from step 30k to the
-    end (from its `train_log.csv`: 19.27 − 9.25 = **10.0 GPU-h**, measured Nov 1). Both arms rated at 3–4 points along the way and
-    at the end, each with and without search: "who goes further" at equal compute.
-  - **Control:** step 30k with search, no extra training (Step 15's first rating). It
-    separates "learned better" from "searches better".
+**The question:** starting from SFT 500k @30k (end of pass 1, 9.25 GPU-h), does the LLM go
+further with 10 more GPU-h of **self-play with search** or 10 more GPU-h of **SFT** (pass
+2, which ended at @62.5k)?
+
+- **The two models compared (names used from here on):**
+  - **Self-play LLM** (this step): AlphaZero-style training with the LLM as the network,
+    continuing SFT @30k's LoRA adapters. Rounds of self-play games with 16-simulation
+    MCTS; the policy learns the search's root visit distribution over legal moves
+    (cross-entropy of the LLM's masked move distribution), the value head learns the game
+    result for the side to move. Trained to **10.0 GPU-h** (pass 2's measured cost:
+    19.27 − 9.25).
+  - **SFT @62.5k:** pass 2, already trained (no extra cost).
+- **Evals (Derek, Nov 1): a 2 × 2, training method × search, all on the full panel
+  (Step 12f), 20 games per member:**
+
+  | | no search | with search (16 sims) |
+  |---|---|---|
+  | **SFT @62.5k** | free: its rung rating from Step 12(f) calibration | new eval, 120 games, ~3 h |
+  | **Self-play LLM** (final checkpoint) | new eval, 120 games, ~2 h | new eval, 120 games, ~3 h |
+
+  Reading it: the *with search* column = which LLM + search system is better (the end
+  product); the *no search* column = which training made the network itself better; each
+  row's gap = what search adds to that model. Without the self-play no-search cell, a
+  self-play win couldn't be split into "it learned more" vs. "search did the work" (the
+  question Step 7 left open).
+- **Control (the go/no-go):** SFT @30k with 16-simulation search, no extra training,
+  rated against `greedy`, `step_20000`, `sf_1320` (the same opponents as its no-search
+  rating, 689). *Halfway (Nov 1, 30 of 60 games): 809 [739, 885], 8W 12D 10L vs. 1W 40D
+  19L without search; 1.72 s/move.* Not extended to the full panel: the +50 check is
+  already like for like.
+- **Dropped (Derek, Nov 1, cost):** mid-run checkpoint evals (checkpoints are kept, so
+  they can be rated later), head-to-heads vs. SFT @30k (the panel already shows whether
+  it improved; the self-play LLM plays SFT @62.5k directly as a panel member), extending
+  the control to the panel.
 - **Why it can work where Step 7 didn't.** Plain RL gave one game result per ~150 moves
   and a value head at chance, so no per-move credit (four flat runs). Search gives every
   position an improved target (its visit counts), a per-move signal like SFT's labels but
@@ -493,37 +514,28 @@ high-priority item after the 500k evals. Branch:* `step-17-llm-mcts` (cut from
 - **Simulations: 16 per move (Derek, Nov 1).** With ~30 legal moves, 8 simulations barely
   look one move ahead, so the targets mostly echo the policy (close to imitating itself);
   16 let the top candidates be searched 2–3 half-moves deep, enough to catch a blunder.
-  Confirmed by the control before launch (go = +50 Elo or more, see the gate).
-- **Throughput (estimate, Nov 1; to be measured by a timing probe on the L4).** One
-  unbatched LLM evaluation ~0.09 s; batched ~15–25 ms per position. Per training position:
-  self-play ~17 evaluations (~0.35 s batched) + the update (all legal moves scored with
-  gradients, ~0.2 s). In ~9.6 GPU-h: **~60k positions, ~600 games** (vs. ~20k unbatched,
-  and pass 2's 500k labeled positions). Pass 2 is the favorite at equal compute; arm 1
-  keeping up or winning would be a strong result, and losing measures how much less
-  efficient self-taught search is than an oracle at this scale.
-- **Code:** `model/llm_evaluator.py` (batched; Step 15); `train/llm_mcts.py` (rounds of
+- **Throughput (estimate, Nov 1; measured by the timing probe).** One unbatched LLM
+  evaluation ~0.09 s; batched ~15–25 ms per position. Per training position: self-play
+  ~17 evaluations (~0.35 s batched) + the update (all legal moves scored with gradients,
+  ~0.2 s). In 10 GPU-h: **~60k positions, ~600 games** (vs. pass 2's 500k labeled
+  positions). SFT is the favorite at equal compute; the self-play LLM keeping up or
+  winning would be a strong result, and losing measures how much less efficient
+  self-taught search is than an oracle at this scale.
+- **Code:** `model/llm_evaluator.py` (batched; done); `train/llm_mcts.py` (rounds of
   `search.mcts.play_games` with the LLM evaluator, replay buffer, policy + value update,
   resumable, GPU-hour cap, `mcts_log.csv`); `configs/llm_mcts.yaml`; notebook
   `10_train_llm_mcts`. `model/llm_policy.py` stays unchanged.
-- **Order:** (1) the evaluator + timing probe; (2) the control rating (30k at 16, and
-  optionally 8) and the probe on an L4; (3) if the control shows a clear search gain,
-  build the trainer and smoke-test it; (4) run arm 1 on its own pod and repo clone.
-- **In parallel with Step 12(f) (Derek, Nov 1).** Step 17 runs on its own pod while the
-  eval panel is built and calibrated. The control is rated against `greedy`, `step_20000`,
-  `sf_1320` now: the same opponents as 30k's no-search rating, so the +50 check compares
-  like with like, and all three are panel members. When the panel exists, the control row
-  (and every Step 17 checkpoint) is extended to the full panel; no games are replayed.
-  Arm 1's training needs only the control result and the trainer, not the panel.
-  Arm 1's start, SFT 500k @30k, also plays every rated Step 17 checkpoint head-to-head
-  (Derek, Nov 1: a fully rated baseline, not a reference rung, because arm 1's self-play
-  could learn to exploit its own starting model). Budget: 10.0 GPU-h (pass 2, measured).
+- **Order:** (1) evaluator + timing probe (done); (2) control (running Nov 1); (3) if the
+  control clears +50: build the trainer, smoke-test it; (4) train the self-play LLM to
+  10.0 GPU-h on its own pod and repo clone, in parallel with Step 12(f); (5) the 3 new
+  evals above, once the panel's rungs are frozen. Cost (2)–(5): ~17 pod-h, ~$10.
 - **Open (decide at step (3)):** games per round, replay buffer size, KL to the starting
   model (Step 7 used one; AlphaZero didn't), positions trained per round.
 
-*Gate (before launch):* the control shows a clear Elo gain from 16 simulations, **defined as
-+50 Elo or more over the same checkpoint without search (Derek, Nov 1)**; the timing probe
-sizes the rounds. *Gate (end):* arm 1 trained to the budget, 3–4 checkpoints rated
-with and without search, compared with pass 2 at matching GPU-hours.
+*Gate (before training):* the control shows a clear Elo gain from 16 simulations,
+**defined as +50 Elo or more over the same checkpoint without search (Derek, Nov 1)**;
+the timing probe sizes the rounds. *Gate (end):* the self-play LLM trained to 10.0 GPU-h;
+the 2 × 2 above filled, every cell on the full panel.
 
 ### Deferred
 
