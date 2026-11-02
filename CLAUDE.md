@@ -118,6 +118,16 @@ Rules:
     own repo clone. Branch `step-13-data-scale`.
   - Pods: one CPU-heavy job per pod; two pods at once means one repo clone per pod on the
     volume and watchdogs on the combined rate (plan Sec 1, 4.1).
+  - Step 12 (Nov 1): (a)-(e) done and their gate met (7 re-rates with records; head-to-head
+    round 1: SFT 500k @30k beat AZ r109 0/34/6 despite rating ~110 lower). Reopened as the
+    evals revamp: (f) one panel for every headline model (`random`, `greedy`, `step_20000`,
+    `sf_1320` + frozen rungs AZ r109 and SFT 500k @62.5k; 20 games per opponent). Merge into
+    `main` after (f).
+  - Step 14 (Nov 1): LLM SFT 500k trained (2 passes, 62.5k steps, 19.27 GPU-h, val move loss
+    2.40); @10k/20k/30k rated 689/664/689. CNN SFT not built yet (in scope, after Step 17).
+  - Step 17 (Nov 1): LLM + MCTS from SFT 500k @30k vs. SFT pass 2 at equal compute (10.0
+    GPU-h); branch `step-17-llm-mcts`; runs in parallel with 12(f) on its own pod. Go/no-go:
+    16-simulation search adds >= +50 Elo at play time (control running Nov 1).
 
 ## How code runs (one source of truth per thing)
 

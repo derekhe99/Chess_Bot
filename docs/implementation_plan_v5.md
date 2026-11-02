@@ -84,7 +84,7 @@ considered; one CPU-only pod labels it (no multi-pod chunking).
 | Search | PUCT MCTS (`search/mcts.py`) over any model exposing `evaluate(boards) -> [(priors over legal moves, expected score for the side to move)]`. In training only for AlphaZero; at play time it is a switch on any network agent (Step 12). No per-move inference cap: simulations per move is a setting and shows up in sec/move. |
 | Board orientation | LLM arms never flip. CNN arms (AlphaZero and CNN SFT) flip to the side to move (`to_planes_stm`, `stm_index`). |
 | Terminology | **Game** = one full game. **Round** = a batch of self-play games then one training update. SFT has no rounds. |
-| Eval | **Frozen reference set:** `sf_1320` = 1320 (pin), `sf_1500`, `sf_1700`, `random`, `greedy`, `step_20000`. Each new model is rated against it; only its own rating is fitted. Stockfish members play at 0.1 s per move. New models: 20 games against each of the 2–3 nearest reference opponents, in batches of 10, row saved after each batch. No CI target; +20 games by hand only if a CI is wider than ±200. A model may be frozen as a new rung only if CIs in the gap above `step_20000` become unusable. **New in v5:** every eval game is recorded (Step 12), and head-to-head matches between models are reported as their own table, not fed into the reference fit. |
+| Eval | **Frozen reference set:** `sf_1320` = 1320 (pin), `sf_1500`, `sf_1700`, `random`, `greedy`, `step_20000`. Each new model is rated against it; only its own rating is fitted. Stockfish members play at 0.1 s per move. New models: 20 games against each of the 2–3 nearest reference opponents, in batches of 10, row saved after each batch. No CI target; +20 games by hand only if a CI is wider than ±200. A model may be frozen as a new rung only if CIs in the gap above `step_20000` become unusable. **New in v5:** every eval game is recorded (Step 12), and head-to-head matches between models are reported as their own table, not fed into the reference fit. **Changed Nov 1 (Step 12f, Derek): one panel for every headline model**, replacing the 2–3-nearest rule: `random`, `greedy`, `step_20000`, `sf_1320` + two frozen model rungs, AlphaZero r109 and SFT 500k @62.5k, 20 games each; every new model is rated on the full panel. |
 | Source of truth | **`results/results.csv` is the one summary file** (one row per player, `role` = pin / reference / model, now with W/D/L): every chart and the Step 11 slides read their headline numbers from it, and only `eval.anchors.ResultsTable` writes it. **`results/games.csv` (v5, decided Oct 31) is the supporting detail behind it:** one row per eval or head-to-head game, used to build summaries (W/D/L, draw types, head-to-head tables), never as a second source of headline numbers. Each run folder keeps scratch logs for loss curves. |
 | Compute accounting | No equal budgets. Each arm trains to plateau or a loose cap; fairness comes from **Elo vs. training GPU-hours** curves, 3–4 checkpoints per run, each row carrying cumulative training GPU-hours. **Stockfish labeling CPU-hours are charged to every arm that trains on the labels, for the dataset size it used** (0.99 h for the 50k set). Dollars = GPU-h × `gpu_usd_per_hour` + CPU-h × `cpu_usd_per_hour` (RunPod on-demand, source + date in `base.yaml`), in the analysis notebook. Inference cost = sec/move from eval games × the same rate. |
 | Rigor | 1 seed per arm; more later if time allows. |
@@ -294,7 +294,7 @@ stronger raw policy, and AlphaZero's edge comes from search. Without search it p
 no-search rows are identical to the decimal, including the CI; check with Step 12's
 per-game records whether that is coincidence or the same games/checkpoint.
 
-### Step 12 — Eval v2: richer records, search switch, head-to-head
+### Step 12 — Evals revamp: records, search switch, head-to-head, one panel
 
 *Serves:* every Step 11 output (W/D/L and draw types explain why ratings are held down);
 Q1–Q4 below. *Branch:* `step-12-eval-v2` from `main`.
@@ -327,6 +327,19 @@ Q1–Q4 below. *Branch:* `step-12-eval-v2` from `main`.
   run's step 30k (`structured_masked_nall_e2_s0_scaled_d12_n500000@30000`, end of pass 1)
   instead of the 50k run's 15k: the latest SFT, chosen by validation loss (2.59 vs. 2.84)
   before its Elo exists. It is also in the 500k eval list, so it gets a rating too.
+  **Round 1 result (Nov 1), 40 games per pair:**
+
+  | Pair (a vs b) | a W/D/L | Elo gap a−b [95% CI] |
+  |---|---|---|
+  | AZ r109 vs RL run 4 r15 | 10/27/3 | +61 [+9, +127] |
+  | AZ r109 vs SFT 500k @30k | 0/34/6 | −53 [−98, −17] |
+  | RL run 4 r15 vs SFT 500k @30k | 3/32/5 | −17 [−61, +35] |
+
+  SFT 500k @30k never lost to AZ r109, although the ratings put AZ ~110 above it (798 vs.
+  689): the ratings came from different opponent sets (AlphaZero never played above
+  `step_20000`) and strength isn't transitive. 55–65% of games end in threefold
+  repetition. This mismatch is why (f) exists. Later rounds use RL run 4 **r20**
+  (Derek, Nov 1: the same last-checkpoint rule as the panel).
 - **(e) Re-evaluate the headline checkpoints with full records.** **Scope (Derek, Nov 1;
   was 10 on Oct 31): 7 checkpoints:** SFT 15k (the 50k run's best); the last checkpoint
   (r20) of each RL run 1–4; AlphaZero r5 and r53 (the ends of stage 1). Dropped: SFT 25k,
@@ -339,13 +352,53 @@ Q1–Q4 below. *Branch:* `step-12-eval-v2` from `main`.
   keep their existing ratings without W/D/L. Notebook `09_rerate_with_records`
   (`eval.agents.rerate`), resumable: a checkpoint with a full set of saved games is
   skipped. ~6 h of L4 time (~1 h per LLM checkpoint, ~30–45 min per AlphaZero one).
+  *Done (Nov 1).*
+- **(f) One eval panel for every headline model (added Nov 1, Derek).** Why: ratings
+  against different opponents don't compare (the references' own ratings are uncertain,
+  ±~100, and that error cancels only between models that faced the same ones), and
+  nothing sits between `step_20000` (719) and `sf_1320`, where every model is. A game
+  says most when the result is uncertain (information ∝ p(1−p)): vs. `sf_1320` a ~700
+  model gets ~1/8 of an even game's information, so the gap needs rungs, not just
+  `sf_1320` everywhere.
+  - **The panel (6):** `random`, `greedy`, `step_20000`, `sf_1320` (pin), and two frozen
+    model rungs: `az_b6c64_s0@r109` (AlphaZero, 50 simulations) and
+    `structured_masked_nall_e2_s0_scaled_d12_n500000@62500` (SFT 500k, end of pass 2;
+    lowest validation loss, 2.40). Not SFT @30k: it rates next to `step_20000` (no gap
+    filled), and it is Step 17's start, whose self-play could learn to exploit it; it stays
+    a fully rated model instead. No Stockfish rung below 1320: `UCI_Elo`'s floor is 1320,
+    and a node- or depth-limited Stockfish isn't reliably weaker. `sf_1500`/`sf_1700` stay
+    frozen, off the panel.
+  - **Stage 1, calibrate the rungs:** each plays the 4 existing members and the other
+    rung, **40 games per pairing** (a rung's error passes to every model rated against
+    it; the original members got 160–200 games). Both fitted together with the 4 held
+    fixed, then frozen. AZ r109's model row (798) becomes a reference row; its note keeps
+    the old rating.
+  - **Stage 2, rate the headline models on the panel, 20 games per opponent:** rows with
+    saved games play only the opponents they lack (old games stay valid: same checkpoint,
+    engine and frozen opponents), then are refitted on all their games. SFT 50k @15k,
+    SFT 500k @30k, RL runs 1–4 @r20 (play `random` + the 2 rungs); AZ r53 with search
+    (plays `sf_1320` + the 2 rungs); AZ r53 and r109 without search (no saved games: all
+    6). Step 17's control and checkpoints are extended to the panel the same way.
+  - **Stage 3, consistency check:** the ratings' predicted head-to-head score vs. the
+    actual one (AZ r109 vs. SFT 500k @30k from round 1); a standing column in notebook
+    08's table from now on. Large gaps mean the panel can't yet be trusted.
+  - **Code:** `panel:` in `configs/eval.yaml` (the one opponent list every notebook uses;
+    20 games per opponent, 40 for rungs); AlphaZero checkpoint rungs and model-to-
+    reference promotion (`eval/anchors.py`); `calibrate_rungs()` and `extend()`
+    (`eval/agents.py`); a panel-coverage check per row (Step 11 flags rows off the panel);
+    a predicted-score column in `head_to_head_table`; notebook `11_eval_panel` (stages
+    1–3, resumable); notebooks 02/04/05/10 default to the panel; tests.
+  - **Where:** one GPU L4 pod for all of it (most games involve an LLM; keeps sec/move
+    GPU-measured), ~13 h. Every new model now costs 120 games (was 60).
 
 *Tests:* a match writes one record per game with the right termination; W/D/L in the
 row equals the sum of its records; concurrent writers lose nothing; `NoSearchAgent` and
 `MCTSAgent` play only legal moves and are deterministic for a fixed seed;
 `head_to_head` swaps colors and covers every pair.
 *Gate:* tests pass; the 7 headline checkpoints re-rated with full records; the first
-head-to-head round (3 pairs × 40 games) played and tabulated.
+head-to-head round (3 pairs × 40 games) played and tabulated (**met Nov 1**); (f): both
+rungs calibrated and frozen, every headline row rated on the full panel, the consistency
+check reported. Then `step-12-eval-v2` merges into `main`.
 
 ### Step 13 — Scaled imitation dataset
 
