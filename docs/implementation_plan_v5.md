@@ -209,6 +209,25 @@ valid; new work took the next free numbers (12–16); final analysis was already
 and always runs last. A renumbering in running order was considered and not done
 (Oct 31).
 
+### 4.0 Where things stand and what runs next (Nov 1, Derek)
+
+**Done:** Steps 0–7, 9, 13, 16; Step 12 (a)–(e); LLM SFT on 500k trained (Step 14, 2 passes).
+**Order from here** (supersedes the order above):
+
+| # | Work | Pod | Gate / output | Est. pod-h |
+|---|---|---|---|---|
+| 1 | **Step 12(f) eval panel:** calibrate the 2 rungs, then rate SFT 50k @15k, SFT 500k @30k, RL run 4 @r20, AZ r109 no-search on the panel, then the consistency check | pod A | Step 12 gate → merge into `main` | ~9 |
+| 2 | **Step 17, in parallel:** control (SFT @30k + 16-sim search, ≥ +50 Elo = go) → trainer build + smoke test → self-play training to 10.0 GPU-h → 3 panel evals (self-play LLM with and without search, SFT @62.5k with search) | pod B | Step 17 gate | ~17 |
+| 3 | **Step 14b: CNN SFT** (50k, 500k): build, train, rate on the panel | any free pod | Step 14 gate → merge into `main` | tbd |
+| 4 | **Step 15:** the CNN half of the search grid (the LLM half comes from Steps 12(f) and 17) | any | Step 15 gate | tbd |
+| 5 | **Step 11:** final analysis | laptop | slides | 0 |
+
+**Budget for 1–2:** ~26 pod-h ≈ **$17** at $0.59/pod-h (Derek, Nov 1: scoped to the questions
+that matter; dropped: RL runs 1–3 and AZ r53 re-rates, head-to-heads vs. SFT @30k, mid-run
+Step 17 checkpoints). Watchdogs: whenever the number of running pods changes, rerun the
+runbook's watchdog block on every running pod with the current balance and RATE = $0.59 ×
+running pods.
+
 ### 4.1 What can run in parallel (Oct 31)
 
 **Two constraints decide what can overlap:**
@@ -375,10 +394,11 @@ Q1–Q4 below. *Branch:* `step-12-eval-v2` from `main`.
     the old rating.
   - **Stage 2, rate the headline models on the panel, 20 games per opponent:** rows with
     saved games play only the opponents they lack (old games stay valid: same checkpoint,
-    engine and frozen opponents), then are refitted on all their games. SFT 50k @15k,
-    SFT 500k @30k, RL runs 1–4 @r20 (play `random` + the 2 rungs); AZ r53 with search
-    (plays `sf_1320` + the 2 rungs); AZ r53 and r109 without search (no saved games: all
-    6). Step 17's control and checkpoints are extended to the panel the same way.
+    engine and frozen opponents), then are refitted on all their games. **Trimmed (Derek,
+    Nov 1, cost): one row per story:** SFT 50k @15k, SFT 500k @30k, RL run 4 @r20 (play
+    `random` + the 2 rungs: 60 games each); AZ r109 without search (no saved games: all 6,
+    120 games). AZ r109 with search is the rung itself, so its search gain is rung rating −
+    no-search rating. Dropped: RL runs 1–3 (same flat story), AZ r53.
   - **Stage 3, consistency check:** the ratings' predicted head-to-head score vs. the
     actual one (AZ r109 vs. SFT 500k @30k from round 1); a standing column in notebook
     08's table from now on. Large gaps mean the panel can't yet be trusted.
@@ -391,7 +411,7 @@ Q1–Q4 below. *Branch:* `step-12-eval-v2` from `main`.
     branch changed notebook 02; 10 on Step 17's branch); tests. New logic lives in
     `eval/panel.py`, which no other open branch touches, so the merges stay clean.
   - **Where:** one GPU L4 pod for all of it (most games involve an LLM; keeps sec/move
-    GPU-measured), ~13 h. Every new model now costs 120 games (was 60).
+    GPU-measured), ~9 h (stage 1 ~4.5, stage 2 ~4.5). Every new model now costs 120 games (was 60).
 
 *Tests:* a match writes one record per game with the right termination; W/D/L in the
 row equals the sum of its records; concurrent writers lose nothing; `NoSearchAgent` and
