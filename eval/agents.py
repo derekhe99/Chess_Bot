@@ -21,6 +21,8 @@ Main pieces:
 - agent_name    -- the results.csv row name for a search setting (plan v5 Sec 2.2)
 - load_player   -- a saved checkpoint of any arm, by a plain spec, as a playable agent
                    (the head-to-head and later re-evals load players this way)
+- rate          -- rate a spec against reference opponents into a results row, every game
+                   saved (e.g. an LLM checkpoint with search: Step 15/17's control)
 - rerate        -- (Step 12e) re-rate an existing model row with every game saved; the
                    new row replaces the old one and its note keeps the old rating
 
@@ -111,17 +113,22 @@ def load_player(spec: dict, artifact_root: str | Path, *, device=None):
     """A saved checkpoint as a playable agent, from a plain spec.
 
     spec: {"name": row name, "kind": "sft" | "llm_rl" | "alphazero", "run": run folder,
-           "step": SFT step or RL / AlphaZero round, "simulations": AlphaZero search budget
-           (0 = no search; default: configs/alphazero.yaml's)}.
-    LLM checkpoints play as in their evals (masked argmax). Imports are lazy: loading an
-    LLM pulls in transformers.
+           "step": SFT step or RL / AlphaZero round, "simulations": search budget
+           (AlphaZero default: configs/alphazero.yaml's; 0 = no search)}.
+    An LLM checkpoint without "simulations" plays as in its evals (LLMPolicy, masked
+    argmax); with it, the LLM drives the search through model.llm_evaluator (Step 15/17).
+    Imports are lazy: loading an LLM pulls in transformers.
     """
     path = checkpoint_dir(spec, artifact_root)
     if not path.is_dir():
         raise FileNotFoundError(f"{spec['name']}: no checkpoint at {path}")
     if spec["kind"] in ("sft", "llm_rl"):
         from train.sft import load_checkpoint
-        return load_checkpoint(path, device=device, name=spec["name"])
+        policy = load_checkpoint(path, device=device, name=spec["name"])
+        if "simulations" not in spec:
+            return policy
+        from model.llm_evaluator import LLMEvaluator
+        return make_agent(LLMEvaluator(policy), spec["name"], int(spec["simulations"]))
     from model.az_net import AZEvaluator
     from train.az_train import load_checkpoint, load_configs
     net = load_checkpoint(path, device)
@@ -141,6 +148,32 @@ def is_rerated(results, name: str, games: int) -> bool:
     return bool(row and row.get("wins") not in ("", None) and int(row["games"] or 0) >= games)
 
 
+def rate(spec: dict, results, artifact_root, opponents: dict, *, fields: dict | None = None,
+         games_per_opponent: int = 20, batch_games: int = 10, gpu: str = "", n_boot: int = 1000,
+         load=None, verbose: bool = True):
+    """Rate a spec against reference opponents into its results row (every game saved). Returns the estimate.
+
+    ``fields``: the row's other columns (run, step, train_gpu_hours, label_cpu_hours,
+    dataset_size, note, ...). After every batch the row is (over)written with the Elo, CI,
+    W/D/L and sec/move so far, and its games replace any saved ones: a stop keeps the last
+    batch, and a rerun of an unfinished rating starts it again from scratch.
+    """
+    from eval.match import evaluate_agent
+    fields = dict(fields or {})
+    agent = (load or load_player)(spec, artifact_root)
+
+    def save(est, recs):
+        results.log_model(est, recs, gpu=gpu, **fields)
+        results.save()
+
+    try:
+        est, _ = evaluate_agent(agent, opponents, results.fixed(), games_per_opponent, batch_games=batch_games,
+                                on_batch=save, n_boot=n_boot, verbose=verbose)
+    finally:
+        del agent
+    return est
+
+
 def rerate(spec: dict, results, artifact_root, opponents: dict, *, games_per_opponent: int = 20,
            batch_games: int = 10, gpu: str = "", n_boot: int = 1000, load=None, verbose: bool = True):
     """Re-rate one existing model row with full records (plan v5 Step 12e). Returns the estimate.
@@ -154,7 +187,6 @@ def rerate(spec: dict, results, artifact_root, opponents: dict, *, games_per_opp
     the last batch. Fields that describe the checkpoint (CARRIED_FIELDS) are carried over,
     and the note gains the old rating.
     """
-    from eval.match import evaluate_agent
     name = spec["name"]
     if results.role(name) != "model":
         raise ValueError(f"{name!r} is not a model row in {results.path}; nothing to re-rate")
@@ -166,15 +198,6 @@ def rerate(spec: dict, results, artifact_root, opponents: dict, *, games_per_opp
     if "re-rated with records" not in note:   # first re-rating: remember the old rating
         note = (f"{note}; " if note else "") + (f"re-rated with records (was {old['rating']} "
                                                 f"[{old['ci_low']}, {old['ci_high']}], {old['games']} games)")
-    agent = (load or load_player)(spec, artifact_root)
-
-    def save(est, recs):
-        results.log_model(est, recs, gpu=gpu, note=note, **keep)
-        results.save()
-
-    try:
-        est, _ = evaluate_agent(agent, opponents, results.fixed(), games_per_opponent, batch_games=batch_games,
-                                on_batch=save, n_boot=n_boot, verbose=verbose)
-    finally:
-        del agent
-    return est
+    return rate(spec, results, artifact_root, opponents, fields={**keep, "note": note},
+                games_per_opponent=games_per_opponent, batch_games=batch_games, gpu=gpu, n_boot=n_boot,
+                load=load, verbose=verbose)

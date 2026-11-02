@@ -200,3 +200,22 @@ def test_rerate_replaces_the_row_keeps_its_facts_and_saves_every_game(tmp_path):
     assert len(t2.games("sft@15000")) == 4 and is_rerated(t2, "sft@15000", 4)
     with pytest.raises(ValueError):
         rerate({**spec, "name": "greedy"}, t2, tmp_path, opponents, load=lambda s, r: None)
+
+
+def test_rate_writes_a_new_row_with_its_fields_and_games(tmp_path):
+    from eval.agents import rate
+    from eval.anchors import GreedyAgent
+    path = tmp_path / "results.csv"
+    t = ResultsTable(path)
+    t.add_reference("random", 525.0, 450.0, 600.0, 100, spec={"kind": "random"})
+    t.add_reference("greedy", 641.0, 580.0, 700.0, 100, spec={"kind": "greedy"})
+    t.save()
+    spec = {"name": "run_mcts16@30000", "kind": "sft", "run": "run", "step": 30000, "simulations": 16}
+    rate(spec, ResultsTable(path), tmp_path, {"random": RandomAgent("random", seed=1), "greedy": GreedyAgent("greedy", seed=2)},
+         fields={"run": "run_mcts16", "step": 30000, "train_gpu_hours": 9.4, "dataset_size": 500000, "note": "control"},
+         games_per_opponent=2, batch_games=2, gpu="test", n_boot=20, verbose=False,
+         load=lambda s, root: RandomAgent(s["name"], seed=3))
+    t2 = ResultsTable(path)
+    row = t2.rows["run_mcts16@30000"]
+    assert row["role"] == "model" and row["games"] == "4" and row["run"] == "run_mcts16" and row["note"] == "control"
+    assert row["train_gpu_hours"] == "9.4" and row["dataset_size"] == "500000" and len(t2.games("run_mcts16@30000")) == 4

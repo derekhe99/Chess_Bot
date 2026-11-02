@@ -133,12 +133,12 @@ Chess_Bot/
   data/     download.py  sample_positions.py  annotate.py  dataset.py
   model/    llm_policy.py  az_net.py  llm_evaluator.py (v5)
   search/   mcts.py  selfplay.py
-  train/    sft.py  llm_rl.py  az_train.py  cnn_sft.py (v5)
+  train/    sft.py  llm_rl.py  az_train.py  cnn_sft.py (v5)  llm_mcts.py (v5, Step 17)
   eval/     anchors.py  match.py  elo.py  plots.py  agents.py (v5)
   notebooks/
     00_setup  01_build_dataset  02_train_sft  03_evaluate  04_train_llm_rl
     05_train_alphazero  06_analysis  07_train_cnn_sft (v5)  08_head_to_head (v5)
-    09_rerate_with_records (v5)
+    09_rerate_with_records (v5)  10_train_llm_mcts (v5, Step 17)
   tests/    test_engine  test_data  test_llm_policy  test_sft  test_eval  test_mcts
             test_az  test_plots  test_cnn_sft (v5)  test_agents (v5)
 ```
@@ -430,17 +430,22 @@ side. *Branch:* `step-14-sft-scale`.
 - **`model/llm_evaluator.py`:** an LLM checkpoint as an `evaluate()` model (priors =
   softmax over masked move scores; value = value head). The LLM's value head was trained
   on Stockfish win probabilities, which makes SFT checkpoints the best leaf evaluators.
+  **Batched (Nov 1):** `evaluate(boards)` scores many positions in one forward pass, so
+  Step 17's self-play (many games at once, as AlphaZero's `play_games`) keeps the GPU busy.
 - **Ratings, with full records:** the best CNN SFT and best LLM SFT checkpoint at each
   data size, each with and without MCTS; also SFT 25k (50k data) at 16 simulations, as
-  decided Oct 31. Defaults: CNN at 50 simulations (as AlphaZero); LLM at 16 (one LLM
+  decided Oct 31. **First (Derek, Nov 1): the 500k run's step 30k at 16 simulations** (and
+  optionally 8), against its own no-search rating. It is Step 17's control (search at
+  play time, no extra training) and its go/no-go check: if 16 simulations add a clear Elo
+  gain, the search's move targets are better than the policy, so they are worth training
+  on. Defaults: CNN at 50 simulations (as AlphaZero); LLM at 16 (one LLM
   evaluation ~0.09 s, so ~1.5 s/move, ~2 h per 60-game eval). Matched simulations vs.
   matched sec/move: open (Sec 5 item 6).
 - **Output:** an architecture × search grid per data size, {CNN, LLM} × {no search,
   search}, alongside AlphaZero's two series (self-play, with and without search). Search
   adds no training compute: each search row carries its checkpoint's GPU-hours, and its
   cost shows up in sec/move.
-- LLM + MCTS option B (search inside the training loop) stays parked; revisit after
-  this step's results.
+- LLM + MCTS option B (search inside the training loop): **un-parked Nov 1 as Step 17.**
 
 *Gate:* every grid cell rated with sec/move; the search gain per network tabulated.
 
@@ -460,6 +465,65 @@ and stage 1–2 is the clean baseline.
 both ways (`EVAL_NO_SEARCH = True`); launch per `docs/runpod_runbook.md` section F (stage 2).
 
 *Gate:* the stage-2 checkpoints rated both ways; it joins the head-to-head.
+
+### Step 17 — LLM self-play with search from SFT, compute-matched against more SFT
+
+*Serves:* Q4 for the LLM (imitation vs. self-play from the same start, at equal compute)
+and Q3 (search during training vs. only at play). *Added Nov 1 (Derek); the
+high-priority item after the 500k evals. Branch:* `step-17-llm-mcts` (cut from
+`step-12-eval-v2`, which has the search switch).
+
+- **Design (Derek, Nov 1).** Phase 1 = imitation: the 500k SFT run to step 30k (end of
+  pass 1, ~9.6 GPU-h). From there, two arms with the same extra compute:
+  - **Arm 1 (this step):** AlphaZero-style training with the LLM as the network. Rounds
+    of self-play games with MCTS; the policy learns the search's root visit distribution
+    over legal moves (cross-entropy of the LLM's masked move distribution), the value head
+    learns the game result for the side to move. Continues the SFT LoRA adapters.
+  - **Arm 2:** SFT pass 2, i.e. the running 500k run from step 30k to its end. Already
+    running; costs nothing extra.
+  - **Budget:** arm 1 gets exactly the training GPU-hours pass 2 used from step 30k to the
+    end (from its `train_log.csv`: 19.27 − 9.25 = **10.0 GPU-h**, measured Nov 1). Both arms rated at 3–4 points along the way and
+    at the end, each with and without search: "who goes further" at equal compute.
+  - **Control:** step 30k with search, no extra training (Step 15's first rating). It
+    separates "learned better" from "searches better".
+- **Why it can work where Step 7 didn't.** Plain RL gave one game result per ~150 moves
+  and a value head at chance, so no per-move credit (four flat runs). Search gives every
+  position an improved target (its visit counts), a per-move signal like SFT's labels but
+  produced by the model's own look-ahead: the mechanism behind AlphaZero's climb.
+- **Simulations: 16 per move (Derek, Nov 1).** With ~30 legal moves, 8 simulations barely
+  look one move ahead, so the targets mostly echo the policy (close to imitating itself);
+  16 let the top candidates be searched 2–3 half-moves deep, enough to catch a blunder.
+  Confirmed by the control before launch (go = +50 Elo or more, see the gate).
+- **Throughput (estimate, Nov 1; to be measured by a timing probe on the L4).** One
+  unbatched LLM evaluation ~0.09 s; batched ~15–25 ms per position. Per training position:
+  self-play ~17 evaluations (~0.35 s batched) + the update (all legal moves scored with
+  gradients, ~0.2 s). In ~9.6 GPU-h: **~60k positions, ~600 games** (vs. ~20k unbatched,
+  and pass 2's 500k labeled positions). Pass 2 is the favorite at equal compute; arm 1
+  keeping up or winning would be a strong result, and losing measures how much less
+  efficient self-taught search is than an oracle at this scale.
+- **Code:** `model/llm_evaluator.py` (batched; Step 15); `train/llm_mcts.py` (rounds of
+  `search.mcts.play_games` with the LLM evaluator, replay buffer, policy + value update,
+  resumable, GPU-hour cap, `mcts_log.csv`); `configs/llm_mcts.yaml`; notebook
+  `10_train_llm_mcts`. `model/llm_policy.py` stays unchanged.
+- **Order:** (1) the evaluator + timing probe; (2) the control rating (30k at 16, and
+  optionally 8) and the probe on an L4; (3) if the control shows a clear search gain,
+  build the trainer and smoke-test it; (4) run arm 1 on its own pod and repo clone.
+- **In parallel with Step 12(f) (Derek, Nov 1).** Step 17 runs on its own pod while the
+  eval panel is built and calibrated. The control is rated against `greedy`, `step_20000`,
+  `sf_1320` now: the same opponents as 30k's no-search rating, so the +50 check compares
+  like with like, and all three are panel members. When the panel exists, the control row
+  (and every Step 17 checkpoint) is extended to the full panel; no games are replayed.
+  Arm 1's training needs only the control result and the trainer, not the panel.
+  Arm 1's start, SFT 500k @30k, also plays every rated Step 17 checkpoint head-to-head
+  (Derek, Nov 1: a fully rated baseline, not a reference rung, because arm 1's self-play
+  could learn to exploit its own starting model). Budget: 10.0 GPU-h (pass 2, measured).
+- **Open (decide at step (3)):** games per round, replay buffer size, KL to the starting
+  model (Step 7 used one; AlphaZero didn't), positions trained per round.
+
+*Gate (before launch):* the control shows a clear Elo gain from 16 simulations, **defined as
++50 Elo or more over the same checkpoint without search (Derek, Nov 1)**; the timing probe
+sizes the rounds. *Gate (end):* arm 1 trained to the budget, 3–4 checkpoints rated
+with and without search, compared with pass 2 at matching GPU-hours.
 
 ### Deferred
 
@@ -490,7 +554,8 @@ both ways (`EVAL_NO_SEARCH = True`); launch per `docs/runpod_runbook.md` section
 - **Q3 Search:** how much play-time MCTS adds to each network, for how much sec/move.
 - **Q4 Regime:** imitation vs. pure self-play on the same CNN (CNN SFT vs. AlphaZero);
   the gap is the cost of learning without a teacher. (LLM SFT vs. SFT + RL: answered,
-  flat.)
+  flat.) For the LLM (Step 17): from the same SFT start, more imitation vs. self-play with
+  search, at equal compute.
 
 ---
 
@@ -514,8 +579,12 @@ both ways (`EVAL_NO_SEARCH = True`); launch per `docs/runpod_runbook.md` section
 7. **Step 10.** Defer (proposed) or keep the pure LLM self-play run.
 8. **Caps.** Step 14 runs (CNN SFT, LLM SFT at 500k / 2M); AlphaZero stage 3.
 9. **Parked:** richer labels (Stockfish's score for every legal move, which needs
-   relabeling); DAgger; LLM + MCTS option B; AlphaZero retune; Step 8.
+   relabeling); DAgger; AlphaZero retune; Step 8. (LLM + MCTS option B: un-parked Nov 1
+   as Step 17.)
 10. **Prices:** fill `gpu_usd_per_hour` / `cpu_usd_per_hour` in `base.yaml` (source +
     date).
 11. **Framing:** `docs/framing.md` should gain the CNN SFT arm, the data-scaling
-    question, and the search grid (an in-place edit marked `> Update (v5)`).
+    question, the search grid, and Step 17's imitation-vs-search-self-play comparison (an
+    in-place edit marked `> Update (v5)`).
+12. **Step 17's training details** (games per round, buffer, KL, positions per round):
+    decided when the trainer is built, after the control and the timing probe.
