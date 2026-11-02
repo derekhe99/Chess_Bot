@@ -387,7 +387,9 @@ Q1–Q4 below. *Branch:* `step-12-eval-v2` from `main`.
     reference promotion (`eval/anchors.py`); `calibrate_rungs()` and `extend()`
     (`eval/agents.py`); a panel-coverage check per row (Step 11 flags rows off the panel);
     a predicted-score column in `head_to_head_table`; notebook `11_eval_panel` (stages
-    1–3, resumable); notebooks 02/04/05/10 default to the panel; tests.
+    1–3, resumable); notebooks 04/05/08 use the panel (02 after Step 14 merges, since that
+    branch changed notebook 02; 10 on Step 17's branch); tests. New logic lives in
+    `eval/panel.py`, which no other open branch touches, so the merges stay clean.
   - **Where:** one GPU L4 pod for all of it (most games involve an LLM; keeps sec/move
     GPU-measured), ~13 h. Every new model now costs 120 games (was 60).
 
