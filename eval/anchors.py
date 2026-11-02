@@ -17,7 +17,8 @@ Main pieces:
                         depth 1, used only to smoke-test the harness
 - build_agents / close_agents -- turn specs into playable agents, and shut them down
 - fixed_ratings      -- pinned ratings + frozen ratings: what the Elo fit holds fixed
-- build_reference_agents -- playable agents for reference rows (incl. checkpoint rungs)
+- build_reference_agents -- playable agents for reference rows (incl. checkpoint rungs:
+                        SFT checkpoints, and AlphaZero ones since plan v5 Step 12f)
 - ResultsTable       -- results/results.csv, the one file of record: the pin, the frozen
                         reference set, and every evaluated model (plan v4, Sec 2.2). Saves
                         merge under a lock file, so jobs sharing the file keep each other's rows.
@@ -198,7 +199,9 @@ def build_reference_agents(results: "ResultsTable", names, artifact_root: str | 
 
     Stockfish / random / greedy members come from REFERENCE_SET; checkpoint rungs
     (spec kind "sft_checkpoint") are loaded from
-    <artifact_root>/checkpoints/sft/<run>/checkpoints/step_NNNNNN. Call close_agents when done.
+    <artifact_root>/checkpoints/sft/<run>/checkpoints/step_NNNNNN, and AlphaZero rungs
+    (spec kind "alphazero_checkpoint": run, step, simulations; plan v5 Step 12f) through
+    eval.agents.load_player. Call close_agents when done.
     """
     specs = {s.name: s for s in results.specs}
     agents = {}
@@ -210,6 +213,10 @@ def build_reference_agents(results: "ResultsTable", names, artifact_root: str | 
             from train.sft import load_checkpoint  # lazy: pulls in torch/transformers
             step_dir = Path(artifact_root) / "checkpoints" / "sft" / spec["run"] / "checkpoints" / f"step_{spec['step']:06d}"
             agents[name] = load_checkpoint(step_dir, device=device, name=name)
+        elif spec.get("kind") == "alphazero_checkpoint":
+            from eval.agents import load_player  # lazy: pulls in torch
+            agents[name] = load_player({"name": name, "kind": "alphazero", "run": spec["run"], "step": spec["step"],
+                                        "simulations": spec.get("simulations", 50)}, artifact_root, device=device)
         else:
             agents[name] = build_anchor(specs[name])
     return agents
@@ -241,7 +248,7 @@ def game_rows(records, kind: str, subject: str, eval_id: str) -> list[dict]:
     def per_move(lat):
         return round(sum(lat) / len(lat), 4) if lat else ""
     today = _dt.date.today().isoformat()
-    return [{"kind": kind, "subject": subject, "eval_id": eval_id, "game": i, "date": today,
+    return [{"kind": kind, "subject": subject, "eval_id": eval_id, "game": i, "date": getattr(r, "date", "") or today,
              "white": r.white, "black": r.black,
              "result": {1.0: "1-0", 0.5: "1/2-1/2", 0.0: "0-1"}[r.white_score], "white_score": r.white_score,
              "termination": r.termination, "plies": r.plies,
@@ -338,13 +345,18 @@ class ResultsTable:
         return json.loads(cell) if cell else {}
 
     def add_reference(self, name: str, rating: float, ci_low: float, ci_high: float, games: int, *,
-                      spec: dict, note: str = "") -> None:
-        """Freeze a new reference member. Refuses an existing pin or reference name."""
+                      spec: dict, note: str = "", **fields) -> None:
+        """Freeze a new reference member. Refuses an existing pin or reference name.
+
+        A model row may be promoted (plan v5 Step 12f): the reference row replaces it.
+        ``fields``: other RESULTS_COLUMNS to keep on the row (run, step, train_gpu_hours,
+        ...), so a checkpoint rung still shows on its run's curve.
+        """
         if self.role(name) in ("pin", "reference"):
             raise ValueError(f"{name!r} is already a {self.role(name)}; frozen ratings are never re-rated")
         sf = SF_VERSION if spec.get("kind") == "stockfish" else ""
         self.rows[name] = self._row(name, "reference", rating, ci_low, ci_high, games, spec=spec,
-                                    note=note, stockfish_version=sf)
+                                    note=note, stockfish_version=sf, **fields)
         self._changed.add(name)
 
     def log_model(self, estimate, records=(), **fields) -> dict:
