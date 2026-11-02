@@ -529,8 +529,19 @@ further with 10 more GPU-h of **self-play with search** or 10 more GPU-h of **SF
   control clears +50: build the trainer, smoke-test it; (4) train the self-play LLM to
   10.0 GPU-h on its own pod and repo clone, in parallel with Step 12(f); (5) the 3 new
   evals above, once the panel's rungs are frozen. Cost (2)–(5): ~17 pod-h, ~$10.
-- **Open (decide at step (3)):** games per round, replay buffer size, KL to the starting
-  model (Step 7 used one; AlphaZero didn't), positions trained per round.
+- **Training settings (Derek, Nov 1; `configs/llm_mcts.yaml`):** 64 games per round
+  (searched together); **no pull toward the starting model** (AlphaZero has none; the
+  targets are per-move); replay buffer = the **last 3 rounds'** positions; per round, **2 x
+  the new positions** in examples, SFT's learning rate (1e-4) and batch size (16). Each
+  example = one buffer position + one move sampled by its visit share, trained exactly like
+  an SFT example (move NLL + value BCE vs. the game result): an unbiased estimate of the
+  cross-entropy to the visit distribution at one example's cost. Fixed as AlphaZero: root
+  noise 0.3/0.25, sampled moves for 30 plies, draw at 300 plies. A round starts only if at
+  least half of it fits the budget (ends within ~half a round of 10.0 GPU-h). Checkpoint
+  every 2 rounds; only the final one is evaluated.
+- **Runs unattended (Derek, Nov 1):** one chained command on its pod: smoke test (2 tiny
+  rounds, separate folder) -> gate check (+50) -> training -> the 3 new evals (waits for the
+  panel's rungs) -> the pod stops itself. Notebook 10 parts 3-5.
 
 *Gate (before training):* the control shows a clear Elo gain from 16 simulations,
 **defined as +50 Elo or more over the same checkpoint without search (Derek, Nov 1)**;
@@ -598,5 +609,5 @@ the 2 × 2 above filled, every cell on the full panel.
 11. **Framing:** `docs/framing.md` should gain the CNN SFT arm, the data-scaling
     question, the search grid, and Step 17's imitation-vs-search-self-play comparison (an
     in-place edit marked `> Update (v5)`).
-12. **Step 17's training details** (games per round, buffer, KL, positions per round):
-    decided when the trainer is built, after the control and the timing probe.
+12. ~~Step 17's training details~~ — decided Nov 1 (Step 17: 64 games/round, no KL, last
+    3 rounds, 2x per position at SFT's learning rate).

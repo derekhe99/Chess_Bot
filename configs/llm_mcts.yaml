@@ -1,0 +1,29 @@
+# Step 17: the self-play LLM (plan v5 Step 17; settings agreed with Derek, Nov 1).
+# AlphaZero-style training with the LLM as the network, from SFT 500k @30k, to the same
+# 10.0 GPU-h that SFT pass 2 spent. Read by train.llm_mcts.MCTSTrainConfig.from_dict.
+# Changing a setting makes a different run: change `tag` too.
+init_run: structured_masked_nall_e2_s0_scaled_d12_n500000   # SFT 500k
+init_step: 30000            # end of pass 1 (9.25 GPU-h)
+budget_gpu_hours: 10.0      # = SFT pass 2's measured cost (19.27 - 9.25)
+rounds: 1000                # upper bound; the budget stops first
+games_per_round: 64         # searched together: one batched LLM call per simulation step
+opening_plies: 4            # random opening half-moves per game (not trained on)
+max_plies: 300              # draw at this ply, as AlphaZero
+simulations: 16             # per move (the control: +50 Elo or more at play time = go)
+c_puct: 1.5
+dirichlet_alpha: 0.3        # root noise, self-play only
+dirichlet_weight: 0.25
+temperature_plies: 30       # sample by visit count before this ply, then most-visited
+buffer_rounds: 3            # train on positions from the last 3 rounds
+samples_per_position: 2.0   # examples per round = 2 x the round's new positions
+batch_size: 16              # SFT's
+micro_batch: 16
+learning_rate: 1.0e-4       # SFT's
+weight_decay: 0.0
+grad_clip: 1.0
+value_loss: bce
+value_loss_weight: 1.0
+checkpoint_every: 2         # kept checkpoints (only the final one is evaluated)
+eval_batch_positions: 64
+seed: 0
+tag: ""

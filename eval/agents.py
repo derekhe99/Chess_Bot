@@ -97,7 +97,7 @@ def make_agent(evaluator: Evaluator, name: str, simulations: int,
     return MCTSAgent(evaluator, name, dataclasses.replace(cfg or MCTSConfig(), simulations=simulations))
 
 
-PLAYER_KINDS = ("sft", "llm_rl", "alphazero")
+PLAYER_KINDS = ("sft", "llm_rl", "llm_mcts", "alphazero")   # llm_mcts: Step 17's self-play LLM
 
 
 def checkpoint_dir(spec: dict, artifact_root: str | Path) -> Path:
@@ -112,7 +112,7 @@ def checkpoint_dir(spec: dict, artifact_root: str | Path) -> Path:
 def load_player(spec: dict, artifact_root: str | Path, *, device=None):
     """A saved checkpoint as a playable agent, from a plain spec.
 
-    spec: {"name": row name, "kind": "sft" | "llm_rl" | "alphazero", "run": run folder,
+    spec: {"name": row name, "kind": "sft" | "llm_rl" | "llm_mcts" | "alphazero", "run": run folder,
            "step": SFT step or RL / AlphaZero round, "simulations": search budget
            (AlphaZero default: configs/alphazero.yaml's; 0 = no search)}.
     An LLM checkpoint without "simulations" plays as in its evals (LLMPolicy, masked
@@ -122,7 +122,7 @@ def load_player(spec: dict, artifact_root: str | Path, *, device=None):
     path = checkpoint_dir(spec, artifact_root)
     if not path.is_dir():
         raise FileNotFoundError(f"{spec['name']}: no checkpoint at {path}")
-    if spec["kind"] in ("sft", "llm_rl"):
+    if spec["kind"] in ("sft", "llm_rl", "llm_mcts"):
         from train.sft import load_checkpoint
         policy = load_checkpoint(path, device=device, name=spec["name"])
         if "simulations" not in spec:
