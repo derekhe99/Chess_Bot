@@ -17,7 +17,9 @@ predict what the search found. Each ROUND (plan Sec 0 terminology):
   4. Save: resume state every round; a kept checkpoint every ``checkpoint_every``.
 
 Compute: GPU time = wall-clock of self-play + updates (as Step 7). There is no SFT
-and no labeling, so train_gpu_hours starts at 0. The cap (``max_gpu_hours``) is an
+and no labeling, so train_gpu_hours starts at 0 -- unless the run starts from a trained
+network (plan v5 Step 18: ``init_from``, e.g. CNN SFT end of pass 1), whose GPU-hours
+(``init_gpu_hours``) are then counted in train_gpu_hours and in the cap. The cap (``max_gpu_hours``) is an
 argument, not a saved setting, so raising it and rerunning resumes the same run
 (staged 9 / 18 / 30, plan Step 9). When the cap stops a run, its last round is
 marked kept, so every stage ends on an evaluable checkpoint.
@@ -89,6 +91,8 @@ class AZConfig:
     checkpoint_every: int = 5         # rounds between KEPT checkpoints (the latest round is always on disk)
     seed: int = 0
     tag: str = ""                     # appended to the run folder name; change it whenever a setting changes
+    init_from: str = ""               # Step 18: label of the network the run starts from (e.g.
+                                      # 'cnn_sft/<run>@p1'); '' = random weights (AlphaZero)
 
     def __post_init__(self):
         if min(self.rounds, self.games_per_round, self.buffer_positions, self.batch_size, self.checkpoint_every) < 1:
@@ -357,9 +361,15 @@ def ending_counts(games: list[SelfPlayGame]) -> dict:
 
 # ------------------------------------------------------------ train ----
 
+# Settings added after the AlphaZero run started, with the value that reproduces how it behaved: a
+# run_config.json missing one is read as having that value, so az_b6c64_s0 still resumes.
+ADDED_TRAIN_SETTINGS = {"init_from": ""}
+
+
 def train(cfg: AZConfig, net_cfg: NetConfig, mcts_cfg: MCTSConfig, run_dir: str | Path, *,
           device: str | torch.device | None = None, max_gpu_hours: float | None = None,
-          max_rounds: int | None = None, extra_info: dict | None = None, log=print) -> dict:
+          max_rounds: int | None = None, extra_info: dict | None = None, log=print,
+          init_dir: str | Path | None = None, init_gpu_hours: float = 0.0) -> dict:
     """Run AlphaZero rounds; resumable. Returns the run summary.
 
     Inputs:
@@ -369,6 +379,10 @@ def train(cfg: AZConfig, net_cfg: NetConfig, mcts_cfg: MCTSConfig, run_dir: str 
       max_gpu_hours  -- stop once training GPU-hours reach this (staged 9 / 18 / 30;
                         NOT saved, so raising it and rerunning resumes); None = no cap
       max_rounds     -- stop after this round this session (e.g. the smoke run); resumable
+      init_dir       -- with cfg.init_from: the round/pass folder whose net.pt the run starts
+                        from (read only at the first round; a resume uses its own checkpoints)
+      init_gpu_hours -- GPU-hours already spent to train that network; added to
+                        train_gpu_hours and counted by the cap (Step 18: the total budget)
     Files written in run_dir:
       run_config.json  -- settings
       checkpoints/round_NNNN/ -- net.pt (+ resume.pt and buffer.npz on the latest round)
@@ -380,11 +394,17 @@ def train(cfg: AZConfig, net_cfg: NetConfig, mcts_cfg: MCTSConfig, run_dir: str 
     run_dir.mkdir(parents=True, exist_ok=True)
     device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
+    if cfg.init_from and init_dir is None:
+        raise ValueError(f"init_from={cfg.init_from!r} needs init_dir (the folder with its net.pt)")
+    if not cfg.init_from and (init_dir is not None or init_gpu_hours):
+        raise ValueError("init_dir / init_gpu_hours need cfg.init_from (a label for the start network)")
     settings = {"train": dataclasses.asdict(cfg), "net": dataclasses.asdict(net_cfg),
-                "mcts": dataclasses.asdict(mcts_cfg)}
+                "mcts": dataclasses.asdict(mcts_cfg), "init_gpu_hours": float(init_gpu_hours)}
     cfg_path = run_dir / "run_config.json"
     if cfg_path.exists():
         saved = json.loads(cfg_path.read_text())
+        saved["train"] = {**ADDED_TRAIN_SETTINGS, **(saved.get("train") or {})}
+        saved.setdefault("init_gpu_hours", 0.0)
         if json.loads(json.dumps(settings)) != {k: saved.get(k) for k in settings}:
             raise ValueError(f"{run_dir} was started with different settings; use a new run folder (or a new tag)")
     else:
@@ -392,6 +412,12 @@ def train(cfg: AZConfig, net_cfg: NetConfig, mcts_cfg: MCTSConfig, run_dir: str 
 
     torch.manual_seed(cfg.seed)                         # the network's random init
     net = AZNet(net_cfg).to(device).eval()
+    if cfg.init_from and not list_checkpoints(run_dir):  # a fresh run starts from the given network
+        state = torch.load(Path(init_dir) / "net.pt", map_location=device, weights_only=False)
+        if NetConfig(**state["net_config"]) != net_cfg:
+            raise ValueError(f"{init_dir} holds a {state['net_config']} network, not {net_cfg}")
+        net.load_state_dict(state["state_dict"])
+        log(f"starting from {cfg.init_from} ({init_gpu_hours:.3f} GPU-h already spent)")
     optimizer = torch.optim.Adam(net.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
     buffer = ReplayBuffer(cfg.buffer_positions)
     counters = {"round": 0, "gpu_seconds": 0.0, "games": 0, "positions": 0}
@@ -415,7 +441,7 @@ def train(cfg: AZConfig, net_cfg: NetConfig, mcts_cfg: MCTSConfig, run_dir: str 
             torch.cuda.synchronize(device)
 
     def hours() -> float:
-        return counters["gpu_seconds"] / 3600
+        return init_gpu_hours + counters["gpu_seconds"] / 3600
 
     evaluator = AZEvaluator(net, device)
     stop_at = cfg.rounds if max_rounds is None else min(cfg.rounds, max_rounds)

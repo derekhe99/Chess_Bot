@@ -1,0 +1,13 @@
+# Step 14b: CNN SFT (plan v5; Derek, Nov 26). AlphaZero's network (configs/alphazero.yaml net:
+# 6 x 64) trained on the 500k Stockfish labels. Read by train.cnn_sft.CNNSFTConfig.from_dict.
+dataset: sft_scaled_d12_n500000       # the 500k set (Step 13)
+val_from: sft_2013-06_d12_n50000      # the fixed 50k validation split, as the LLM
+train_positions: null                 # null = all
+val_positions: null                   # null = the whole validation split (~5k)
+epochs: 2                             # passes; checkpoints at the end of each (pass 1 -> Step 18)
+batch_size: 256                       # AlphaZero's (~1,950 steps per pass)
+learning_rate: 1.0e-3                 # AlphaZero's Adam settings
+weight_decay: 1.0e-4
+log_every: 100
+seed: 0
+tag: ""

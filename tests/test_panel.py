@@ -187,3 +187,27 @@ def test_plots_put_a_checkpoint_rung_on_its_run(tmp_path):
     pts = runs["alphazero/az"]
     assert [p["name"] for p in pts] == ["az@r53", "az@r109"] and pts[1]["hollow"] and pts[1]["x"] == 18.0
     assert [l["name"] for l in lines] == ["sf_1320"]
+
+
+def test_rung_wdl_recorded_at_freeze_and_backfilled(tmp_path):
+    from eval.panel import fill_rung_wdl, rung_wdl
+    path = tmp_path / "results.csv"
+    t = table_with_refs(path)
+    rungs = [{"name": "rA", "kind": "sft", "run": "a", "step": 1}, {"name": "rB", "kind": "sft", "run": "b", "step": 1}]
+    seeds = {"rA": 11, "rB": 12}
+    calibrate_rungs(rungs, t, tmp_path, refs(), games_per_pair=4, batch_games=2, n_boot=10,
+                    load=lambda s, root: RandomAgent(s["name"], seed=seeds[s["name"]]), verbose=False)
+    t2 = ResultsTable(path)
+    a = t2.rows["rA"]
+    assert int(a["wins"]) + int(a["draws"]) + int(a["losses"]) == 12 and rung_wdl(t2, "rA") == {
+        k: int(a[k]) for k in ("wins", "draws", "losses")}
+    for n in ("rA", "rB"):                                  # simulate rungs frozen before W/D/L was recorded
+        t2.rows[n] = {**t2.rows[n], "wins": "", "draws": "", "losses": ""}
+    t2._write_csv(path, list(t2.rows[next(iter(t2.rows))].keys()), list(t2.rows.values()))
+    t3 = ResultsTable(path)
+    assert t3.rows["rA"]["wins"] == ""
+    out = fill_rung_wdl(t3, ["rA", "rB", "not_a_row"], verbose=False)   # unknown names are skipped
+    t4 = ResultsTable(path)
+    assert set(out) == {"rA", "rB"} and t4.rows["rA"]["wins"] != "" and t4.rows["rA"]["rating"] == a["rating"]
+    with pytest.raises(ValueError):                         # a frozen rating can't be "annotated"
+        t4.annotate_reference("rA", rating=900)

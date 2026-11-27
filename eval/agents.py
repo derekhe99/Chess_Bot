@@ -97,7 +97,7 @@ def make_agent(evaluator: Evaluator, name: str, simulations: int,
     return MCTSAgent(evaluator, name, dataclasses.replace(cfg or MCTSConfig(), simulations=simulations))
 
 
-PLAYER_KINDS = ("sft", "llm_rl", "llm_mcts", "alphazero")   # llm_mcts: Step 17's self-play LLM
+PLAYER_KINDS = ("sft", "llm_rl", "llm_mcts", "alphazero", "cnn_sft")   # llm_mcts: Step 17; cnn_sft: Step 14b
 
 
 def checkpoint_dir(spec: dict, artifact_root: str | Path) -> Path:
@@ -105,15 +105,15 @@ def checkpoint_dir(spec: dict, artifact_root: str | Path) -> Path:
     kind, run, step = spec["kind"], spec["run"], int(spec["step"])
     if kind not in PLAYER_KINDS:
         raise ValueError(f"kind must be one of {PLAYER_KINDS}, got {kind!r}")
-    sub = f"step_{step:06d}" if kind == "sft" else f"round_{step:04d}"
+    sub = {"sft": f"step_{step:06d}", "cnn_sft": f"pass_{step:04d}"}.get(kind, f"round_{step:04d}")
     return Path(artifact_root) / "checkpoints" / kind / run / "checkpoints" / sub
 
 
 def load_player(spec: dict, artifact_root: str | Path, *, device=None):
     """A saved checkpoint as a playable agent, from a plain spec.
 
-    spec: {"name": row name, "kind": "sft" | "llm_rl" | "llm_mcts" | "alphazero", "run": run folder,
-           "step": SFT step or RL / AlphaZero round, "simulations": search budget
+    spec: {"name": row name, "kind": "sft" | "llm_rl" | "llm_mcts" | "alphazero" | "cnn_sft", "run": run
+           folder, "step": SFT step, RL / AlphaZero round, or CNN SFT pass, "simulations": search budget
            (AlphaZero default: configs/alphazero.yaml's; 0 = no search)}.
     An LLM checkpoint without "simulations" plays as in its evals (LLMPolicy, masked
     argmax); with it, the LLM drives the search through model.llm_evaluator (Step 15/17).

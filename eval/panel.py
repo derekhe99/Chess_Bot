@@ -16,6 +16,7 @@ Main pieces:
                      fitted together with the existing members held fixed, then frozen
 - extend          -- stage 2: a model plays only the panel members its saved games lack,
                      then is refitted on old + new games together
+- rung_wdl / fill_rung_wdl -- a rung's W/D/L from its calibration games (kind "calib")
 
 Why old games stay valid: a model's rating uses only its own games against frozen
 opponents; a frozen opponent's rating never changes, so a game against it means the same
@@ -137,13 +138,14 @@ def calibrate_rungs(rungs: list[dict], results, artifact_root, existing: dict, *
         records += saved
 
     est = fit_with_ci(to_results(records), {n: fixed[n] for n in existing}, n_boot=n_boot)
+    wdl = {s["name"]: _wdl(records, s["name"]) for s in rungs}
     off = {n: est[n].at_bound for n in names if est[n].at_bound}
     if off:
         raise RuntimeError(f"not freezing ratings flagged off the scale: {off} -- add games or a closer member")
     for s in rungs:
         e, name = est[s["name"]], s["name"]
         old = results.rows.get(name)
-        fields = dict(s.get("fields") or {})
+        fields = {**dict(s.get("fields") or {}), **wdl[name]}
         note = f"{RUNG_NOTE}: {e.games} calibration games vs {', '.join(existing)} and the other rung(s)"
         if old and old["role"] == "model":
             for k_ in (*CARRIED_FIELDS, "sec_per_move", "gpu"):
@@ -155,6 +157,42 @@ def calibrate_rungs(rungs: list[dict], results, artifact_root, existing: dict, *
             print(f"frozen {name}: {e.rating:.0f} [{e.ci_low:.0f}, {e.ci_high:.0f}], {e.games} games")
     results.save()
     return est
+
+
+def _wdl(records, name: str) -> dict:
+    """{wins, draws, losses} from ``name``'s side over the GameRecords it played."""
+    out = {"wins": 0, "draws": 0, "losses": 0}
+    for r in records:
+        if name in (r.white, r.black):
+            s = r.white_score if r.white == name else 1.0 - r.white_score
+            out["wins" if s == 1.0 else "draws" if s == 0.5 else "losses"] += 1
+    return out
+
+
+def rung_wdl(results, name: str) -> dict:
+    """A rung's W/D/L over every calibration game it played (games.csv, kind "calib")."""
+    games = [g for g in results.games(kind="calib") if name in (g["white"], g["black"])]
+    return _wdl(records_from_rows(games), name)
+
+
+def fill_rung_wdl(results, names: list[str], verbose: bool = True) -> dict:
+    """Backfill W/D/L on rung rows frozen before calibrate_rungs recorded it. Returns {name: wdl}."""
+    out = {}
+    for name in names:
+        if results.role(name) != "reference":
+            continue
+        row = results.rows[name]
+        if row.get("wins") not in ("", None):
+            continue
+        wdl = rung_wdl(results, name)
+        if sum(wdl.values()):                       # only rows with calibration games
+            out[name] = wdl
+            results.annotate_reference(name, **wdl)
+    if out:
+        results.save()
+    if verbose:
+        print("rung W/D/L filled in:", out or "nothing to do")
+    return out
 
 
 def extend(spec: dict, results, artifact_root, opponents: dict, *, games_per_opponent: int = 20,

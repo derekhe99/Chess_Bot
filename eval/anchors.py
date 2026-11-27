@@ -293,6 +293,7 @@ class ResultsTable:
         self._changed: set[str] = set()   # rows this instance wrote since its last save()
         self._games: dict[tuple[str, str], list[dict]] = {}  # (kind, subject) -> rows to write at save()
         self._eval_ids: dict[str, str] = {}                  # model name -> this instance's eval id
+        self._annotated: set[str] = set()                    # reference rows with W/D/L filled in here
         self._add_pins(self.rows)
 
     def _read_rows(self) -> dict[str, dict]:
@@ -358,6 +359,20 @@ class ResultsTable:
         self.rows[name] = self._row(name, "reference", rating, ci_low, ci_high, games, spec=spec,
                                     note=note, stockfish_version=sf, **fields)
         self._changed.add(name)
+
+    # Columns of a frozen row that may still be filled in later (they describe its games, not its rating).
+    ANNOTATABLE = ("wins", "draws", "losses")
+
+    def annotate_reference(self, name: str, **fields) -> None:
+        """Fill in a reference row's W/D/L (plan v5 Step 12f follow-up); its rating never changes."""
+        if self.role(name) != "reference":
+            raise ValueError(f"{name!r} is not a reference row")
+        bad = set(fields) - set(self.ANNOTATABLE)
+        if bad:
+            raise ValueError(f"only {self.ANNOTATABLE} can be annotated on a frozen row, not {sorted(bad)}")
+        self.rows[name] = {**self.rows[name], **{k: v for k, v in fields.items()}}
+        self._changed.add(name)
+        self._annotated.add(name)
 
     def log_model(self, estimate, records=(), **fields) -> dict:
         """Write (or overwrite) a model's row from an Elo estimate and its eval games.
@@ -451,7 +466,10 @@ class ResultsTable:
             merged = self._read_rows()
             for name in self._changed:
                 on_disk = merged.get(name)
-                if on_disk and on_disk["role"] in ("pin", "reference") and on_disk != self.rows[name]:
+                mine = self.rows[name]
+                only_wdl = name in self._annotated and on_disk is not None and all(
+                    str(on_disk.get(k, "")) == str(mine.get(k, "")) for k in RESULTS_COLUMNS if k not in self.ANNOTATABLE)
+                if on_disk and on_disk["role"] in ("pin", "reference") and on_disk != mine and not only_wdl:
                     raise ValueError(f"{name!r} became a {on_disk['role']} in {self.path} after this table "
                                      f"loaded it; frozen rows are never overwritten")
                 merged[name] = self.rows[name]
@@ -465,6 +483,7 @@ class ResultsTable:
         self.rows = merged
         self._changed.clear()
         self._games.clear()
+        self._annotated.clear()
 
     def log_games(self, records, kind: str, subject: str) -> None:
         """Stage games that are not behind a results row (e.g. kind "h2h"); written at save().
