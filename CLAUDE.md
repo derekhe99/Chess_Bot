@@ -140,6 +140,14 @@ Rules:
   - Step 17 (Nov 1): LLM + MCTS from SFT 500k @30k vs. SFT pass 2 at equal compute (10.0
     GPU-h); branch `step-17-llm-mcts`; runs in parallel with 12(f) on its own pod. Go/no-go:
     16-simulation search adds >= +50 Elo at play time (control running Nov 1).
+  - Nov 2: Step 12(f) done (rungs AZ r109 733, SFT 500k @62.5k 775; SFT 500k @30k 735, SFT 50k
+    @15k 669, AZ r109 no-search 666, RL run 4 @r20 662). Step 17 done: self-play LLM 687 / 814
+    with search vs. SFT @62.5k 775 / 895 (more SFT wins at equal compute; search adds ~+125).
+    Both merged into `main` Nov 26.
+  - Nov 26 (Derek): goals = power of scaffolding / SFT / RL. Next: Step 14b CNN SFT (500k,
+    batch 256, 2 passes, pass 1 and 2 rated on the panel ± search) and new Step 18 CNN RL from
+    CNN SFT pass 1 to ~19.3 total GPU-h (AlphaZero settings), one overnight chain with an
+    auto-check. Then Step 11. 50k CNN, 2M data, 10 x 128 network dropped.
 
 ## How code runs (one source of truth per thing)
 

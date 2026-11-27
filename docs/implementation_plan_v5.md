@@ -28,6 +28,11 @@ L4 pod while AlphaZero stage 2 runs (Step 14). Later: Step 16 done (AlphaZero to
 r109 798 with search). Step 12 (a)–(b) built; **the 500k SFT checkpoints are rated next,
 before Step 12 (c)–(e)** (Derek), with (a)–(b)'s per-game records: `step-12-eval-v2` is
 merged into `step-14-sft-scale` for that.
+**Update, Nov 26, 2026:** Steps 12 (with the eval panel) and 17 done and merged into `main`;
+results recorded in Steps 12, 14 and 17. The project's goals are restated as three
+"powers" (scaffolding, SFT, RL; see the research questions after Step 11). Remaining work:
+CNN SFT (Step 14b, revised) and CNN RL from CNN SFT (new Step 18), run as one overnight
+chain, then Step 11 (Sec 4.0).
 
 ---
 
@@ -217,24 +222,33 @@ valid; new work took the next free numbers (12–16); final analysis was already
 and always runs last. A renumbering in running order was considered and not done
 (Oct 31).
 
-### 4.0 Where things stand and what runs next (Nov 1, Derek)
+### 4.0 Where things stand and what runs next (Nov 26, Derek)
 
-**Done:** Steps 0–7, 9, 13, 16; Step 12 (a)–(e); LLM SFT on 500k trained (Step 14, 2 passes).
-**Order from here** (supersedes the order above):
+**Done:** Steps 0–7, 9, 12 (incl. the eval panel), 13, 14a (LLM SFT on 500k), 16, 17. Steps 12
+and 17 merged into `main` (Nov 26).
 
-| # | Work | Pod | Gate / output | Est. pod-h |
+**Headline results, every row on the full panel (Step 12f):**
+
+| Model | Training GPU-h | No search | With search |
+|---|---|---|---|
+| LLM SFT 500k @62.5k (2 passes) | 19.27 | 775 [744, 810] (rung) | **895** [846, 949] (16 sims) |
+| LLM SFT 500k @30k (1 pass) | 9.25 | 735 [705, 764] | — |
+| Self-play LLM (from @30k, round 4) | 19.58 | 687 [662, 713] | 814 [779, 855] (16 sims) |
+| LLM SFT 50k @15k | 4.61 | 669 [636, 702] | — |
+| AlphaZero CNN r109 (from scratch) | 18.04 | 666 [633, 698] | 733 [707, 761] (rung, 50 sims) |
+| LLM RL run 4 @r20 | 16.56 | 662 [633, 691] | — |
+
+**Order from here** (supersedes the order above and the Nov 1 table):
+
+| # | Work | Pod | Gate / output | Est. |
 |---|---|---|---|---|
-| 1 | **Step 12(f) eval panel:** calibrate the 2 rungs, then rate SFT 50k @15k, SFT 500k @30k, RL run 4 @r20, AZ r109 no-search on the panel, then the consistency check | pod A | Step 12 gate → merge into `main` | ~9 |
-| 2 | **Step 17, in parallel:** control (SFT @30k + 16-sim search, ≥ +50 Elo = go) → trainer build + smoke test → self-play training to 10.0 GPU-h → 3 panel evals (self-play LLM with and without search, SFT @62.5k with search) | pod B | Step 17 gate | ~17 |
-| 3 | **Step 14b: CNN SFT** (50k, 500k): build, train, rate on the panel | any free pod | Step 14 gate → merge into `main` | tbd |
-| 4 | **Step 15:** the CNN half of the search grid (the LLM half comes from Steps 12(f) and 17) | any | Step 15 gate | tbd |
-| 5 | **Step 11:** final analysis | laptop | slides | 0 |
+| 1 | **Step 14b CNN SFT + Step 18 CNN RL, one overnight chain:** smoke tests → CNN SFT on 500k (2 passes) → auto-check → panel evals of CNN SFT pass 1 and 2, each ± search → CNN RL from pass 1 to 19.3 total GPU-h → panel evals of its final checkpoint ± search → pod stops | one L4 pod | Steps 14 and 18 gates → merge into `main` | ~24–26 h, ~$15 |
+| 2 | **Step 11:** final analysis + slides | laptop | slides | 0 |
 
-**Budget for 1–2:** ~26 pod-h ≈ **$17** at $0.59/pod-h (Derek, Nov 1: scoped to the questions
-that matter; dropped: RL runs 1–3 and AZ r53 re-rates, head-to-heads vs. SFT @30k, mid-run
-Step 17 checkpoints). Watchdogs: whenever the number of running pods changes, rerun the
-runbook's watchdog block on every running pod with the current balance and RATE = $0.59 ×
-running pods.
+Dropped (Derek, Nov 26): a 50k CNN SFT run, a ~2M dataset, more re-rates of old curve
+points, a second LLM self-play run. Watchdogs: whenever the number of running pods changes,
+rerun the runbook's watchdog block on every running pod with the current balance and
+RATE = $0.59 × running pods.
 
 ### 4.1 What can run in parallel (Oct 31)
 
@@ -430,6 +444,15 @@ head-to-head round (3 pairs × 40 games) played and tabulated (**met Nov 1**); (
 rungs calibrated and frozen, every headline row rated on the full panel, the consistency
 check reported. Then `step-12-eval-v2` merges into `main`.
 
+*Result (f), Nov 2 (notebook 11, 80 min on one L4):* rungs frozen at **AZ r109 733 [707, 761]**
+and **SFT 500k @62.5k 775 [744, 810]** (200 calibration games each); on the panel (120 games):
+SFT 500k @30k 735 (was 689), SFT 50k @15k 669 (was 714), AZ r109 no search 666 (was 666),
+RL run 4 @r20 662 (was 681). AZ r109's old 798 was inflated by weak opponents. Consistency
+check (AZ r109 vs. SFT @30k, round 1): predicted −2, observed −53 [−98, −17]: closer than the
+old +110 but still outside the CI (34 of 40 games drawn). **Gate met; merged into `main`
+Nov 26.** Follow-up: rung rows don't carry W/D/L yet (their games are in `games.csv` as
+`kind = calib`); filled in by `calibrate_rungs` in Step 14b's build.
+
 ### Step 13 — Scaled imitation dataset
 
 *Serves:* Q1 and Q2 (data is SFT's binding limit). *Branch:* `step-13-data-scale`.
@@ -501,15 +524,21 @@ models still failing to convert won positions.
 *Serves:* Q1 (architecture under identical data), Q2 (data scaling), and Q4's imitation
 side. *Branch:* `step-14-sft-scale`.
 
-- **CNN SFT (new arm):** `AZNet` at AlphaZero's size (6 × 64), so CNN SFT vs. AlphaZero
-  compares two training regimes on one network. `train/cnn_sft.py`, `configs/cnn_sft.yaml`,
-  notebook 07. Train on 50k and 500k (and 2M if built), stopping on validation loss,
-  since overfitting is the known failure. It is cheap per position, so it runs first:
-  the 50k run can start before Step 13 finishes (Sec 4.1), and its 50k-vs-500k result
-  decides whether 2M is built. **Network size (Oct 31):** start at 6 × 64 (~0.71M
-  parameters, AlphaZero's size). Add one larger network, 10 × 128 (~3.2M, ~4.5× larger,
-  still ~190× smaller than the LLM), only if CNN SFT plateaus, to test whether network
-  capacity is the limit.
+- **CNN SFT (Step 14b; revised Nov 26, Derek):** `AZNet` at AlphaZero's size (6 × 64, ~0.71M
+  parameters; same network as AlphaZero, so CNN SFT vs. AlphaZero compares two training
+  regimes on one network). Trained on the **500k** set only (the same labels and fixed 50k
+  validation set as the LLM): move target = Stockfish's best move (cross-entropy over the
+  legal moves, side-to-move frame), value target = Stockfish's win probability (BCE).
+  **Batch 256, 2 passes (~1,950 steps per pass)**; kept checkpoints at the **end of pass 1
+  and of pass 2** (the analogues of LLM @30k and @62.5k: the same data seen, counted in
+  passes; steps differ only because the batch is 16× larger). Saved in AlphaZero's
+  checkpoint format, so Step 18 starts from it directly. Training costs minutes of GPU: SFT
+  on a network this small is limited by data, not compute, so it is reported at its own
+  GPU-h rather than padded to 19 (filling 19 GPU-h would mean hundreds of passes and
+  memorization). `train/cnn_sft.py`, `configs/cnn_sft.yaml`, notebook 07. Dropped (Nov 26):
+  the 50k run, the 2M dataset, the 10 × 128 network.
+- **CNN SFT evals:** pass 1 and pass 2, each **with and without search** (50 simulations,
+  AlphaZero's setting), on the full panel. These also fill the CNN half of Step 15.
 - **LLM SFT on 500k:** the Step 5 recipe unchanged (same prompt, LoRA, value head, loss,
   learning rate, batch size), only the data grows. Cost estimate from Step 5 (~52k
   examples per GPU-h): one pass over 500k ≈ 9.6 GPU-h; over 2M ≈ 38 GPU-h.
@@ -524,7 +553,7 @@ side. *Branch:* `step-14-sft-scale`.
   `RUN_TRAINING`, `RUN_EVAL` from the shell) on its own L4 pod and repo clone
   (`docs/runpod_runbook.md` section H). Training examples are stored as int64 arrays
   (same values, ~3 GB instead of ~12 GB of RAM for 500k).
-  *Running (launched Nov 1, 1.13 s/step).* Validation (the fixed 50k split) so far:
+  *Done (Nov 1): 62,500 steps, 19.27 GPU-h.* Validation (the fixed 50k split):
 
   | step | passes | val move loss | val value loss | top-1 vs Stockfish |
   |---|---|---|---|---|
@@ -534,24 +563,24 @@ side. *Branch:* `step-14-sft-scale`.
   | 20,000 | 0.64 | 2.749 | 0.563 | 30.5% |
   | 25,000 | 0.80 | 2.661 | 0.530 | 31.0% |
   | 30,000 | 0.96 | 2.589 | 0.523 | 31.5% |
+  | 62,500 | 2.00 | 2.402 | 0.511 | 40.0% |
 
   Already below the 50k run's best (2.84 at its step 15k, after ~5 passes) by step 15k, and
-  still falling with no sign of overfitting: more data is helping, as v5 predicted.
+  still falling with no sign of overfitting: more data is helping, as v5 predicted. **On
+  the panel:** @30k 735, @62.5k 775 (rung) vs. the 50k run's best 669: +66 from 10× data,
+  +40 more from the second pass (CIs overlap for the second step).
   **Evals (Nov 1, Derek: before Step 12 (c)–(e)):** steps 10k, 20k, 30k (≈ 1 pass) first,
   vs. `greedy`, `step_20000`, `sf_1320` (20 games each, as the 50k SFT evals), with full
   records; later 45k and the final step (62.5k), plus the lowest-validation-loss one if it is
   not among them; `sf_1500` added if a checkpoint scores well against `sf_1320`. Notebook 02
   with `RUN_TRAINING=0 RUN_EVAL=1 EVAL_STEPS=...` on a separate pod (runbook section I).
-- **Eval:** 3–4 checkpoints per run, no search (`NoSearchAgent` for the CNN; the existing
-  masked argmax for the LLM, which is the same rule), with full records, into
-  `results.csv`. Pick the lowest-validation-loss checkpoint plus evenly spaced ones.
-  Opponents move up the reference set (`sf_1320` and above) as models strengthen; a
-  model in the 800–1300 gap may need a new frozen rung (Sec 0 Eval).
+- **Eval:** every rated checkpoint on the full panel (Step 12f), with full records.
 - **Plots:** Elo vs. training GPU-hours (labeling CPU-hours in the dollar view) and Elo
   vs. dataset size, CNN and LLM on the same axes. GPU-hours matter here: the LLM is ~850×
   larger than the CNN, so per position it costs far more.
 
-*Gate:* CNN SFT rated at 50k and 500k; LLM SFT rated at 500k; both curves drawn.
+*Gate (revised Nov 26):* LLM SFT rated at 500k (met); CNN SFT pass 1 and pass 2 rated on the
+panel, each with and without search.
 
 ### Step 15 — Search at play time on the imitation networks
 
@@ -698,6 +727,48 @@ further with 10 more GPU-h of **self-play with search** or 10 more GPU-h of **SF
 the timing probe sizes the rounds. *Gate (end):* the self-play LLM trained to 10.0 GPU-h;
 the 2 × 2 above filled, every cell on the full panel.
 
+*Result (Nov 2):* control (SFT @30k + 16 sims, 3 opponents) 818 vs. 689 = **+129: go.** Self-play
+ran 4 rounds (~2.6 GPU-h each, almost all self-play: ~1.3 s per position vs. the ~0.35
+estimate; ~25k positions), 19.58 total GPU-h. On the panel:
+
+| | no search | with search (16 sims) | search adds |
+|---|---|---|---|
+| SFT @62.5k | 775 [744, 810] | **895** [846, 949] | +120 |
+| Self-play LLM (round 4) | 687 [662, 713] | 814 [779, 855] | +127 |
+| start: SFT @30k | 735 [705, 764] | — | (+129, control) |
+
+Reading: at equal compute, **more SFT beat self-play with search** (+88 without search, CIs
+apart; +81 with search, CIs touching), and self-play pushed the raw network **down** from 735
+to 687 (borderline). Search adds a steady ~+125 to every LLM checkpoint; self-play training
+did not change how much. Likely causes: only 4 rounds, noisy 16-sim targets (top move ~39% of
+visits), the value head retrained on game results. One seed, one setting: at this compute
+and scale, self-play with search loses to imitation. **Gate met; merged into `main` Nov 26.**
+
+### Step 18 — CNN RL from CNN SFT (added Nov 26, Derek)
+
+*Serves:* goal 3, the power of RL (does self-play improve on an SFT start?) for the CNN,
+mirroring Step 17 for the LLM; also an SFT start vs. a random start for AlphaZero's recipe.
+*Branch:* `step-14-sft-scale` (built and run together with Step 14b, in one chain).
+
+- **Recipe:** AlphaZero's training (`train/az_train.py`), **settings unchanged** (128 games
+  per round, 50 simulations, its buffer, learning rate and sampling), started from **CNN SFT
+  end of pass 1** instead of random weights (the analogue of Step 17 starting from LLM
+  @30k). Code: `az_train` gains a start-from-checkpoint setting (a new run folder; AlphaZero's
+  run is untouched).
+- **Budget:** total training compute (CNN SFT pass 1 + RL) **≈ 19.3 GPU-h**, matching the
+  LLM's final models (19.27 and 19.58) and AlphaZero from scratch (18.04).
+- **Evals:** the final checkpoint on the full panel, with and without search (50 sims).
+- **Readout:** vs. its start (CNN SFT pass 1): did RL improve the network? vs. CNN SFT pass 2:
+  RL or more SFT? vs. AlphaZero from scratch (733 / 666): what did the SFT start buy?
+- **Runs in one chain with Step 14b (Derek, Nov 26):** smoke tests (both) → CNN SFT → **auto-check**
+  (RL starts only if validation move loss fell during SFT and pass 1's no-search panel rating
+  beats `random`, 525; else the chain skips RL and stops the pod) → CNN SFT evals (evals first,
+  so they're ready while RL runs) → RL → final evals → the pod stops itself. This replaces
+  the manual look at Step 14b's results before Step 18 starts.
+
+*Gate:* trained to ≈ 19.3 total GPU-h; the final checkpoint rated on the panel with and without
+search.
+
 ### Deferred
 
 - **Step 8 — 2×2 sweep** (mask × representation), deferred since Oct 17.
@@ -718,17 +789,18 @@ the 2 × 2 above filled, every cell on the full panel.
 - Illegal-move rate for unmasked arms, only if the 2×2 returns.
 - Optional: more games for the arms on the final slides.
 
-### Research questions v5 serves (framing map)
+### The project's goals (Derek, Nov 26) and the research questions behind them
 
-- **Q1 Architecture:** CNN vs. LLM trained on identical imitation data, on Elo vs.
-  GPU-hours.
-- **Q2 Data scaling:** does more labeled data lift SFT past its plateau, for each
-  architecture?
-- **Q3 Search:** how much play-time MCTS adds to each network, for how much sec/move.
-- **Q4 Regime:** imitation vs. pure self-play on the same CNN (CNN SFT vs. AlphaZero);
-  the gap is the cost of learning without a teacher. (LLM SFT vs. SFT + RL: answered,
-  flat.) For the LLM (Step 17): from the same SFT start, more imitation vs. self-play with
-  search, at equal compute.
+1. **Power of scaffolding (search):** what play-time MCTS adds to each network (Q3). *LLM:
+   +120–130 at every checkpoint (Steps 15, 17); AlphaZero CNN: +67. CNN SFT: Step 14b.*
+2. **Power of SFT:** imitation of Stockfish's labels, and how it scales with data (Q2). *LLM:
+   669 (50k) → 735 → 775 (500k, 1 and 2 passes). CNN: Step 14b.*
+3. **Power of RL:** does learning from game results improve on an SFT start, at equal
+   compute (Q4)? *LLM: no (plain RL flat; self-play with search lost to more SFT, Step 17).
+   CNN: Step 18.*
+
+Plus Q1, architecture: CNN vs. LLM on identical data and compute (Step 14b vs. 14a, Step 18 vs.
+17), on Elo vs. GPU-hours.
 
 ---
 
@@ -740,18 +812,17 @@ the 2 × 2 above filled, every cell on the full panel.
 2. ~~Re-eval scope~~ — 7 headline checkpoints (Step 12e; narrowed from 10 on Nov 1).
 3. ~~Head-to-head~~ — best-rated checkpoint per arm, 40 games per pair, colors swapped
    (Step 12d).
-4. ~~Dataset sizes~~ — 500k now, sampled fresh with the 50k's validation set; ~2M
-   decided after CNN SFT's 50k-vs-500k result (Step 13).
-5. **CNN size** — start at 6 × 64; add 10 × 128 only if CNN SFT plateaus (Step 14).
-   The larger network itself is decided then.
+4. ~~Dataset sizes~~ — 500k, sampled fresh with the 50k's validation set (Step 13); ~2M
+   dropped (Derek, Nov 26).
+5. ~~CNN size~~ — 6 × 64 only (AlphaZero's); 10 × 128 dropped (Derek, Nov 26).
 
 **Still open (decide when the step comes):**
 6. **Search budget (Step 15).** Matched simulations (cleaner algorithmic comparison) vs.
    matched sec/move (fair on inference cost; the LLM would get ~1–2 simulations at
    AlphaZero's 0.09 s).
 7. **Step 10.** Defer (proposed) or keep the pure LLM self-play run.
-8. **Caps.** LLM SFT at 500k decided Nov 1: 2 passes (Step 14). Still open: CNN SFT, LLM
-   SFT at 2M, AlphaZero stage 3.
+8. ~~Caps~~ — LLM SFT 500k: 2 passes (Nov 1). CNN SFT 500k: 2 passes, batch 256; CNN RL:
+   ≈ 19.3 total GPU-h (Nov 26). AlphaZero stage 3, LLM SFT at 2M: dropped.
 9. **Parked:** richer labels (Stockfish's score for every legal move, which needs
    relabeling); DAgger; AlphaZero retune; Step 8. (LLM + MCTS option B: un-parked Nov 1
    as Step 17.)
