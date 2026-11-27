@@ -18,11 +18,20 @@ Main pieces:
                     the ratings aren't yet tight enough to freeze (Steps 2 and 5)
 - evaluate_agent -- the entry point later Steps use: play a model against the
                     frozen reference set and return its Elo with a confidence interval
+- head_to_head   -- (plan v5 Step 12d) models against each other: every pair, the same
+                    openings for every pair, colors swapped; kept out of the reference fit
+- head_to_head_table -- per pair: score, W/D/L, implied Elo difference with a bootstrap
+                    CI, and how the draws happened; given ratings, also the gap the ratings
+                    predict and whether it falls inside the CI (plan v5 Step 12f)
+- records_from_rows -- saved games.csv rows back into GameRecords (Step 12f: extending a
+                    rating keeps its old games)
 """
 from __future__ import annotations
 
+import math
 import random
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Callable, Protocol
 
@@ -30,7 +39,7 @@ import chess
 import chess.pgn
 
 from engine import board as B
-from eval.elo import RatingEstimate, fit_with_ci, pairs_needing_games
+from eval.elo import RatingEstimate, expected_score, fit_with_ci, pairs_needing_games
 
 
 class Agent(Protocol):
@@ -61,6 +70,35 @@ class GameRecord:
     illegal_attempts: dict[str, int]   # keyed by "white" / "black"
     over_budget_moves: dict[str, int]  # moves slower than move_time_budget, keyed by side
     pgn: str = field(repr=False, default="")
+    date: str = ""                     # set only on games read back from games.csv (kept on re-save)
+
+
+def records_from_rows(rows: list[dict]) -> list[GameRecord]:
+    """games.csv rows -> GameRecords, so saved games can be refitted and re-saved (plan v5 Step 12f).
+
+    Exact for what results and games.csv use: players, score, termination, plies, moves,
+    opening, illegal attempts, date. games.csv keeps only each side's average seconds per
+    move, so each side's latency list is that average repeated once per move it played
+    (after the opening): the totals, and so sec_per_move, come out the same. No PGN.
+    """
+    out = []
+    for g in rows:
+        moves = g["moves"].split() if g.get("moves") else []
+        opening = g["opening"].split() if g.get("opening") else []
+        after = len(moves) - len(opening)
+        n_white = (after + 1) // 2 if len(opening) % 2 == 0 else after // 2
+
+        def lat(cell, n):
+            return [float(cell)] * n if cell not in ("", None) and n > 0 else []
+
+        out.append(GameRecord(
+            white=g["white"], black=g["black"], white_score=float(g["white_score"]),
+            termination=g["termination"], plies=int(g["plies"]), moves=moves, opening=opening,
+            latency={"white": lat(g.get("white_sec_per_move"), n_white),
+                     "black": lat(g.get("black_sec_per_move"), after - n_white)},
+            illegal_attempts={"white": int(g.get("white_illegal") or 0), "black": int(g.get("black_illegal") or 0)},
+            over_budget_moves={"white": 0, "black": 0}, date=g.get("date", "")))
+    return out
 
 
 def random_opening(rng: random.Random, plies: int) -> list[str]:
@@ -314,3 +352,97 @@ def evaluate_agent(agent: Agent, opponents: dict[str, Agent], ratings: dict[str,
         if on_batch is not None:
             on_batch(estimate, records)
     return estimate, records
+
+
+# ---------------------------------------------------- head-to-head (Step 12d) ----
+
+def head_to_head(players: dict[str, Agent], games_per_pair: int, *, seed: int = 0, opening_plies: int = 4,
+                 skip: set[frozenset] | None = None,
+                 on_pair: Callable[[str, str, list[GameRecord]], None] | None = None,
+                 verbose: bool = True, **game_kwargs) -> list[GameRecord]:
+    """Every pair of ``players`` plays ``games_per_pair`` games: a round robin (plan v5 Step 12d).
+
+    Each pair plays color-swapped pairs of games from shared random openings (play_match),
+    and every pair gets the SAME openings (same seed), so no pair is luckier than another.
+    These games say how models do against each other; they never enter the reference-set
+    fit, so every model's Elo still comes from the frozen opponents alone.
+
+    Inputs: players {name: agent}; skip -- pairs (frozenset of two names) already played;
+    on_pair(a, b, games) -- called after each pair (save there: a stop loses one pair at most).
+    Output: all games played in this call.
+    """
+    if games_per_pair % 2:
+        raise ValueError("games_per_pair must be even (games come in color-swapped pairs)")
+    names, records = list(players), []
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            if skip and frozenset((a, b)) in skip:
+                if verbose:
+                    print(f"{a} vs {b}: already played -- skipped")
+                continue
+            start = time.perf_counter()
+            games = play_match(players[a], players[b], games_per_pair, opening_plies=opening_plies,
+                               seed=seed, **game_kwargs)
+            records += games
+            if on_pair is not None:
+                on_pair(a, b, games)
+            if verbose:
+                s = summarize(games, a)
+                print(f"{a} vs {b}: {s['wins']}W {s['draws']}D {s['losses']}L for {a} "
+                      f"({time.perf_counter() - start:.0f}s)")
+    return records
+
+
+def elo_difference(score: float, games: int) -> float:
+    """Elo gap implied by a score: -400 * log10(1/score - 1).
+
+    A score of exactly 0 or 1 implies an infinite gap, so it is held half a game inside
+    (1/(2*games) from the edge): the result reads as "at least this far apart".
+    """
+    edge = 1 / (2 * games)
+    s = min(max(score, edge), 1 - edge)
+    return -400 * math.log10(1 / s - 1) + 0.0   # + 0.0: an even score reads 0.0, not -0.0
+
+
+def head_to_head_table(games: list[dict], n_boot: int = 2000, seed: int = 0,
+                       ratings: dict[str, float] | None = None) -> list[dict]:
+    """One row per pair from head-to-head games (games.csv rows: white, black, white_score, termination).
+
+    Per pair (``a`` = first by name): games, a's wins / draws / a's losses, a's score, the
+    implied Elo difference (a minus b) with a 95% bootstrap CI (games resampled with
+    replacement), whether the score sat at 0 or 1 (``at_edge``: the gap is a bound), and
+    the draws and decisive games by how they ended.
+
+    The consistency check (plan v5 Step 12f): given ``ratings`` ({name: Elo}, e.g. the
+    panel members and models rated on the full panel), each pair also gets the gap the
+    ratings predict (``predicted_diff``, a minus b), a's expected score
+    (``predicted_score``), and ``consistent`` = the predicted gap lies inside the observed
+    gap's 95% CI. Pairs with a player missing from ``ratings`` get None in all three.
+    """
+    rng = random.Random(seed)
+    by_pair: dict[tuple[str, str], list[dict]] = {}
+    for g in games:
+        by_pair.setdefault(tuple(sorted((g["white"], g["black"]))), []).append(g)
+    table = []
+    for (a, b), gs in sorted(by_pair.items()):
+        pts = [float(g["white_score"]) if g["white"] == a else 1 - float(g["white_score"]) for g in gs]
+        n = len(pts)
+        score = sum(pts) / n
+        boot = sorted(elo_difference(sum(rng.choice(pts) for _ in range(n)) / n, n) for _ in range(n_boot))
+        table.append({"a": a, "b": b, "games": n, "a_wins": pts.count(1.0), "draws": pts.count(0.5),
+                      "a_losses": pts.count(0.0), "a_score": round(score, 3),
+                      "elo_diff": round(elo_difference(score, n), 1) + 0.0,
+                      "ci_low": round(boot[int(0.025 * n_boot)], 1) + 0.0, "ci_high": round(boot[int(0.975 * n_boot) - 1], 1) + 0.0,
+                      "at_edge": score in (0.0, 1.0),
+                      "draw_types": dict(Counter(g["termination"] for g, p in zip(gs, pts) if p == 0.5)),
+                      "decisive_types": dict(Counter(g["termination"] for g, p in zip(gs, pts) if p != 0.5))})
+        if ratings is not None:
+            row = table[-1]
+            if a in ratings and b in ratings:
+                diff = ratings[a] - ratings[b]
+                row.update(predicted_diff=round(diff, 1) + 0.0,
+                           predicted_score=round(float(expected_score(ratings[a], ratings[b])), 3),
+                           consistent=bool(row["ci_low"] <= diff <= row["ci_high"]))
+            else:
+                row.update(predicted_diff=None, predicted_score=None, consistent=None)
+    return table

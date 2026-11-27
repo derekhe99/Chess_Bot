@@ -80,6 +80,13 @@ def elo_points(results_path: str | Path) -> tuple[dict[str, list[dict]], dict[st
         if r["role"] not in ("pin", "reference"):
             continue
         spec = json.loads(r["spec"]) if r["spec"] else {}
+        x = _num(r["train_gpu_hours"])
+        if r["run"] and x is not None:   # a checkpoint rung that kept its row's facts (Step 12f): its own point
+            runs.setdefault(r["run"], []).append({"x": x, "y": float(r["rating"]), "lo": _num(r["ci_low"]),
+                                                  "hi": _num(r["ci_high"]), "step": _num(r["step"]),
+                                                  "label": _label(r["run"], _num(r["step"]) or 0),
+                                                  "hollow": True, "name": r["name"]})
+            continue
         pts = runs.get(spec.get("run", ""), [])
         known = sorted((p["step"], p["x"]) for p in pts if p["step"] is not None)
         if spec.get("kind") == "sft_checkpoint" and len(known) >= 2:

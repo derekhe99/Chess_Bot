@@ -1,5 +1,15 @@
-# Evaluating a model against the frozen reference set (plan v4, Sec 0 "Eval").
+# Evaluating a model against the frozen reference set (plan v4, Sec 0 "Eval"; panel: plan v5 Step 12f).
 results_file: results/results.csv    # under artifact_root; the one file of record
 games_per_opponent: 20               # minimum; add +20 by hand only if the CI is wider than +/-200
 batch_games: 10                      # results.csv row is overwritten after every batch
-opponents_per_model: 3               # the 2-3 reference members nearest the model's expected Elo
+# The panel (plan v5 Step 12f): every headline model plays all of these, games_per_opponent each.
+# The last two are model rungs, frozen by notebook 11's stage 1 (calibration); until then they
+# aren't reference rows and the panel can't be used.
+panel:
+  - random
+  - greedy
+  - step_20000
+  - sf_1320
+  - az_b6c64_s0@r109
+  - structured_masked_nall_e2_s0_scaled_d12_n500000@62500
+rung_games_per_pair: 40              # calibration games per pairing for a new rung (its error reaches every model)
