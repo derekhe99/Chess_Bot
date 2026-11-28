@@ -37,6 +37,8 @@ chain, then Step 11 (Sec 4.0).
 Steps 14 and 18. CNN RL is the project's first positive RL result (+76 with search over its
 SFT start), but more SFT (pass 2) still matched or beat it. A GPU-utilization measurement for
 the headline rows is added as Step 11 support (Derek): AlphaZero self-play ran at ~0-2% GPU.
+Then (Derek, Nov 27): **Step 19**, CNN RL from CNN SFT re-run with self-play on 5 CPU cores (the
+from-SFT arm only), to test whether RL's gain is substantive once self-play isn't CPU-starved.
 
 ---
 
@@ -251,7 +253,8 @@ and always runs last. A renumbering in running order was considered and not done
 |---|---|---|---|---|
 | 1 | ~~**Step 14b CNN SFT + Step 18 CNN RL, one overnight chain**~~ — done Nov 27; both gates met | one L4 pod | merge into `main` | ~24 h |
 | 2 | **GPU utilization of the headline rows** (Step 11 support, Derek Nov 27): `eval/gpu_util.py` | one L4 pod, restarted | one line per row in Sec 4.0 | ~30 min, ~$0.30 |
-| 3 | **Step 11:** final analysis + slides | laptop | slides | 0 |
+| 3 | **Step 19: CNN RL from CNN SFT with parallel self-play** (Derek Nov 27): benchmark (gate: ≥ 3× positions/hour) → RL to 19.3 GPU-h → panel evals ± search | one L4 pod (6 vCPU) | Step 19 gate | ~21 h, ~$13 (top-up needed) |
+| 4 | **Step 11:** final analysis + slides | laptop | slides | 0 |
 
 Dropped (Derek, Nov 26): a 50k CNN SFT run, a ~2M dataset, more re-rates of old curve
 points, a second LLM self-play run. Watchdogs: whenever the number of running pods changes,
@@ -810,6 +813,40 @@ core at 100% (Python MCTS, `search/mcts.py`): the GPU-h bought mostly CPU time, 
 lower bound on what AlphaZero's recipe gets from 19 GPU-h. Utilization per headline row:
 Step 11 support item; parallel self-play: Sec 5 item 13.
 
+### Step 19 — CNN RL from CNN SFT with parallel self-play (added Nov 27, Derek)
+
+*Serves:* goal 3, the power of RL: is Step 18's positive result substantive once AlphaZero's
+self-play isn't CPU-starved? *Branch:* `step-19-parallel-selfplay` (cut from
+`step-11-analysis`, which has the GPU sampler).
+
+- **Why:** Step 18 ran at ~0–2% GPU utilization with one of the pod's 6 vCPUs at 100%: the
+  search is pure Python, and Python runs one thread at a time (the GIL), so the GPU waited on
+  one core and the 19.3 GPU-h bought ~136 rounds.
+- **The one change:** each round's 128 self-play games are split across **5 worker processes**
+  (one per spare vCPU; `spawn`, since CUDA can't be forked; 1 torch thread each so they don't
+  compete for cores). Each worker runs the existing batched search (`search/mcts.py`
+  `play_games`, unchanged) on its own copy of the network on the GPU; the main process sends
+  the current weights every round (~3 MB), collects the games, and does the update as before.
+  Code: `search/parallel_selfplay.py`; `az_train` gains `selfplay_workers` (default 1 = the
+  serial path, so old runs resume unchanged). **Everything else unchanged** (128 games per
+  round, 50 simulations, buffer, learning rate, sampling); no other speedups (Derek: one
+  variable at a time).
+- **Scope (Derek, Nov 27):** the from-SFT arm only (the headline is whether RL's gain is
+  substantive); no from-scratch re-run, so "SFT start vs. random start" stays the Step 18
+  comparison (serial vs. serial). One L4 pod at its current size (6 vCPU).
+- **Benchmark first** (notebook 13, stage 1, ~15 min): one round from Step 18's r136 at 1, 3
+  and 5 workers: positions per hour and GPU utilization. **Go only if 5 workers give ≥ 3× the
+  positions per hour of 1**; otherwise stop and discuss.
+- **Run:** from CNN SFT pass 1 to ≈ 19.3 total GPU-h, tag `cnnsft_p1_par5` (run
+  `az_b6c64_s0_cnnsft_p1_par5`); expect ~4× Step 18's rounds.
+- **Evals:** the final checkpoint on the full panel, with and without search (50 sims).
+- **Readout:** vs. Step 18 r136 (698 / 859): what did ~4× the self-play buy at the same GPU-h?
+  vs. its start, CNN SFT pass 1 (662 / 783), and vs. pass 2 (742 / 890).
+- **Cost:** ~$11.40 for the run + ~$1 benchmark and evals; needs a top-up.
+
+*Gate:* benchmark ≥ 3×; trained to ≈ 19.3 total GPU-h; the final checkpoint rated on the panel
+with and without search.
+
 ### Deferred
 
 - **Step 8 — 2×2 sweep** (mask × representation), deferred since Oct 17.
@@ -899,7 +936,9 @@ Plus Q1, architecture: CNN vs. LLM on identical data and compute (Step 14b vs. 1
     in-place edit marked `> Update (v5)`).
 12. ~~Step 17's training details~~ — decided Nov 1 (Step 17: 64 games/round, no KL, last
     3 rounds, 2x per position at SFT's learning rate).
-13. **Parallel self-play for the AlphaZero arms (found Nov 27).** AlphaZero self-play is
+13. ~~**Parallel self-play for the AlphaZero arms (found Nov 27).**~~ Decided Nov 27 (Derek):
+    option (b) for the from-SFT arm only, as Step 19; 5 workers on the current L4 pod; no other
+    speedups. The original options, for the record: AlphaZero self-play is
     single-threaded Python (one core at 100%, GPU ~0–2%; the L4 pod has 6 vCPUs). Options:
     (a) keep the results as they are and report the caveat; (b) parallel self-play across the
     cores (plausibly ~4–5× the games per GPU-h), then re-run both CNN RL arms (from scratch and

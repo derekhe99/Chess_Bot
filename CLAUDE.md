@@ -155,6 +155,10 @@ Rules:
     AlphaZero self-play measured at ~0–2% GPU, one CPU core at 100% (plan Sec 5 item 13).
     Next: merge `step-14-sft-scale` into `main`; then GPU utilization of the headline rows
     (`eval/gpu_util.py`, plan Step 11 support), then Step 11.
+  - Nov 27 (Derek): Step 19 = CNN RL from CNN SFT pass 1 re-run with self-play on 5 worker
+    processes (`selfplay_workers`, `search/parallel_selfplay.py`), from-SFT arm only, current
+    L4 pod, no other speedups. Benchmark gate (>= 3x positions/hour) -> 19.3 GPU-h -> panel
+    evals. Branch `step-19-parallel-selfplay`, notebook 13.
 
 ## How code runs (one source of truth per thing)
 
