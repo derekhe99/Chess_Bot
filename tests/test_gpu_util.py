@@ -96,6 +96,13 @@ def test_combine_flags_an_unrepresentative_slice():
     assert "off by > 25%" in format_table(c)
 
 
+def test_combine_leaves_an_incomplete_row_blank():
+    rows = (Row("rl", "RL", "llm_rl", "r", 1),)       # only Stockfish (0%) is known: no overall number
+    c = combine({"rl": {"init": 2.0, "selfplay": 1.0, "stockfish": 0.1, "update": 1.0, "positions": 10}}, {}, rows)
+    assert c[0]["overall_util"] is None and not c[0]["complete"]
+    assert "| ? |" in format_table(c)
+
+
 def test_headline_rows_are_the_five_in_the_plan():
     assert [r.key for r in ROWS] == ["sft500", "selfplay_llm", "rl4", "az_scratch", "az_cnnsft"]
 

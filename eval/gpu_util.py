@@ -309,14 +309,19 @@ MEASURE = {"sft": measure_sft, "llm_rl": measure_llm_rl, "llm_mcts": measure_llm
 
 
 def measure(row: Row, root, sampler: GpuSampler, **kw) -> dict:
-    """One arm's replay; frees the GPU afterwards so the next arm starts clean."""
+    """One arm's replay; frees the GPU afterwards, even if it fails, so the next arm starts clean.
+
+    (A failed arm's models sit in reference cycles until the garbage collector runs; without the
+    collect below, the next LLM arm runs out of GPU memory.)
+    """
     import gc
     import torch
-    out = MEASURE[row.kind](row, root, sampler, **kw)
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    return out
+    try:
+        return MEASURE[row.kind](row, root, sampler, **kw)
+    finally:
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 # ------------------------------------------------------------ combine ----
@@ -337,7 +342,8 @@ def combine(splits: dict[str, dict], measures: dict[str, dict], rows=ROWS) -> li
         hours = {k: s[k] for k in ("init", "sft", "selfplay", "stockfish", "update") if s.get(k)}
         known = {k: h for k, h in hours.items() if u.get(k) is not None}
         total = sum(hours.values())
-        overall = sum(h * u[k] for k, h in known.items()) / sum(known.values()) if known else None
+        complete = len(known) == len(hours)
+        overall = sum(h * u[k] for k, h in hours.items()) / total if complete and total else None
         check = None
         if row.kind != "sft" and m.get("selfplay", {}).get("positions") and s.get("positions"):
             slice_spp = m["selfplay"]["seconds"] / m["selfplay"]["positions"]
@@ -346,7 +352,7 @@ def combine(splits: dict[str, dict], measures: dict[str, dict], rows=ROWS) -> li
         out.append({"row": row.label, "total_h": round(total, 2), "overall_util": None if overall is None else round(overall, 1),
                     "hours": {k: round(h, 2) for k, h in hours.items()},
                     "util": {k: (None if u[k] is None else round(u[k], 1)) for k in hours},
-                    "slice_vs_log_sec_per_position": check, "complete": len(known) == len(hours)})
+                    "slice_vs_log_sec_per_position": check, "complete": complete})
     return out
 
 
