@@ -93,10 +93,14 @@ class AZConfig:
     tag: str = ""                     # appended to the run folder name; change it whenever a setting changes
     init_from: str = ""               # Step 18: label of the network the run starts from (e.g.
                                       # 'cnn_sft/<run>@p1'); '' = random weights (AlphaZero)
+    selfplay_workers: int = 1         # Step 19: self-play processes (search/parallel_selfplay.py); 1 = in this
+                                      # process (Steps 9 and 18), so their runs resume unchanged
 
     def __post_init__(self):
         if min(self.rounds, self.games_per_round, self.buffer_positions, self.batch_size, self.checkpoint_every) < 1:
             raise ValueError("rounds, games_per_round, buffer_positions, batch_size, checkpoint_every must be positive")
+        if self.selfplay_workers < 1:
+            raise ValueError("selfplay_workers must be >= 1")
         if self.samples_per_position <= 0 or self.learning_rate <= 0 or self.weight_decay < 0:
             raise ValueError("samples_per_position and learning_rate must be > 0, weight_decay >= 0")
         if self.tag and not all(c.isalnum() or c in "-_." for c in self.tag):
@@ -363,7 +367,7 @@ def ending_counts(games: list[SelfPlayGame]) -> dict:
 
 # Settings added after the AlphaZero run started, with the value that reproduces how it behaved: a
 # run_config.json missing one is read as having that value, so az_b6c64_s0 still resumes.
-ADDED_TRAIN_SETTINGS = {"init_from": ""}
+ADDED_TRAIN_SETTINGS = {"init_from": "", "selfplay_workers": 1}
 
 
 def train(cfg: AZConfig, net_cfg: NetConfig, mcts_cfg: MCTSConfig, run_dir: str | Path, *,
@@ -446,52 +450,65 @@ def train(cfg: AZConfig, net_cfg: NetConfig, mcts_cfg: MCTSConfig, run_dir: str 
     evaluator = AZEvaluator(net, device)
     stop_at = cfg.rounds if max_rounds is None else min(cfg.rounds, max_rounds)
     stopped_by_cap = False
-    while counters["round"] < stop_at:
-        if max_gpu_hours is not None and hours() >= max_gpu_hours:
-            stopped_by_cap = True
-            if counters["round"]:
-                _mark_kept(run_dir, counters["round"])
-            log(f"GPU-hour cap reached: {hours():.2f} >= {max_gpu_hours}; round {counters['round']} is kept")
-            break
-        rnd = counters["round"] + 1
-        round_seed = cfg.seed * 1_000_003 + rnd
+    pool = None
+    if cfg.selfplay_workers > 1 and counters["round"] < stop_at:
+        from search.parallel_selfplay import ParallelSelfPlay
+        pool = ParallelSelfPlay(cfg.selfplay_workers, net_cfg, mcts_cfg, device)
+        log(f"self-play on {cfg.selfplay_workers} worker processes")
+    try:
+        while counters["round"] < stop_at:
+            if max_gpu_hours is not None and hours() >= max_gpu_hours:
+                stopped_by_cap = True
+                if counters["round"]:
+                    _mark_kept(run_dir, counters["round"])
+                log(f"GPU-hour cap reached: {hours():.2f} >= {max_gpu_hours}; round {counters['round']} is kept")
+                break
+            rnd = counters["round"] + 1
+            round_seed = cfg.seed * 1_000_003 + rnd
 
-        sync()
-        t0 = time.perf_counter()
-        games = play_games(evaluator, cfg.games_per_round, mcts_cfg, opening_plies=cfg.opening_plies,
-                           max_plies=cfg.max_plies, seed=round_seed)
-        rows = game_examples(games)
-        buffer.add(*rows)
-        sync()
-        t1 = time.perf_counter()
-        steps = update_steps(len(rows[3]), cfg)
-        losses = update(net, buffer, steps, cfg, optimizer, np.random.default_rng(round_seed), device)
-        sync()
-        t2 = time.perf_counter()
+            sync()
+            t0 = time.perf_counter()
+            if pool is not None:
+                games = pool.play(net, cfg.games_per_round, opening_plies=cfg.opening_plies,
+                                  max_plies=cfg.max_plies, seed=round_seed)
+            else:
+                games = play_games(evaluator, cfg.games_per_round, mcts_cfg, opening_plies=cfg.opening_plies,
+                                   max_plies=cfg.max_plies, seed=round_seed)
+            rows = game_examples(games)
+            buffer.add(*rows)
+            sync()
+            t1 = time.perf_counter()
+            steps = update_steps(len(rows[3]), cfg)
+            losses = update(net, buffer, steps, cfg, optimizer, np.random.default_rng(round_seed), device)
+            sync()
+            t2 = time.perf_counter()
 
-        counters["round"] = rnd
-        counters["gpu_seconds"] += t2 - t0
-        counters["games"] += len(games)
-        counters["positions"] += len(rows[3])
-        _save_round(net, run_dir, rnd, optimizer, buffer, counters, cfg)
+            counters["round"] = rnd
+            counters["gpu_seconds"] += t2 - t0
+            counters["games"] += len(games)
+            counters["positions"] += len(rows[3])
+            _save_round(net, run_dir, rnd, optimizer, buffer, counters, cfg)
 
-        results = [g.white_score for g in games]
-        row = {"round": rnd, "games": len(games), "positions": len(rows[3]),
-               "white_wins": sum(s == 1.0 for s in results), "draws": sum(s == 0.5 for s in results),
-               "black_wins": sum(s == 0.0 for s in results),
-               "max_plies_draws": sum(g.termination == "max_plies" for g in games),
-               **ending_counts(games),
-               "avg_plies": round(sum(g.plies for g in games) / len(games), 1),
-               **{k: round(v, 5) for k, v in losses.items()},
-               "buffer_size": buffer.size, "update_steps": steps,
-               "selfplay_seconds": round(t1 - t0, 1), "update_seconds": round(t2 - t1, 1),
-               "train_gpu_hours": round(hours(), 4)}
-        _append_csv(run_dir / "az_log.csv", row)
-        log(f"[round {rnd}] W/D/L {row['white_wins']}/{row['draws']}/{row['black_wins']} "
-            f"({row['avg_plies']} plies; mate {row['ends_checkmate']}, cap {row['max_plies_draws']}) | "
-            f"policy {row['policy_loss']:.3f} value {row['value_loss']:.3f} entropy {row['entropy']:.2f} | "
-            f"self-play {row['selfplay_seconds']:.0f}s + update {row['update_seconds']:.0f}s "
-            f"({steps} steps) | {row['train_gpu_hours']:.2f} GPU-h")
+            results = [g.white_score for g in games]
+            row = {"round": rnd, "games": len(games), "positions": len(rows[3]),
+                   "white_wins": sum(s == 1.0 for s in results), "draws": sum(s == 0.5 for s in results),
+                   "black_wins": sum(s == 0.0 for s in results),
+                   "max_plies_draws": sum(g.termination == "max_plies" for g in games),
+                   **ending_counts(games),
+                   "avg_plies": round(sum(g.plies for g in games) / len(games), 1),
+                   **{k: round(v, 5) for k, v in losses.items()},
+                   "buffer_size": buffer.size, "update_steps": steps,
+                   "selfplay_seconds": round(t1 - t0, 1), "update_seconds": round(t2 - t1, 1),
+                   "train_gpu_hours": round(hours(), 4)}
+            _append_csv(run_dir / "az_log.csv", row)
+            log(f"[round {rnd}] W/D/L {row['white_wins']}/{row['draws']}/{row['black_wins']} "
+                f"({row['avg_plies']} plies; mate {row['ends_checkmate']}, cap {row['max_plies_draws']}) | "
+                f"policy {row['policy_loss']:.3f} value {row['value_loss']:.3f} entropy {row['entropy']:.2f} | "
+                f"self-play {row['selfplay_seconds']:.0f}s + update {row['update_seconds']:.0f}s "
+                f"({steps} steps) | {row['train_gpu_hours']:.2f} GPU-h")
+    finally:
+        if pool is not None:
+            pool.close()
 
     summary = {**counters, "train_gpu_hours": round(hours(), 4), "finished": counters["round"] >= cfg.rounds,
                "stopped_by_cap": stopped_by_cap, "kept_checkpoints": [r for r, _ in list_checkpoints(run_dir)]}
