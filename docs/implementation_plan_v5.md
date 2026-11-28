@@ -33,6 +33,10 @@ results recorded in Steps 12, 14 and 17. The project's goals are restated as thr
 "powers" (scaffolding, SFT, RL; see the research questions after Step 11). Remaining work:
 CNN SFT (Step 14b, revised) and CNN RL from CNN SFT (new Step 18), run as one overnight
 chain, then Step 11 (Sec 4.0).
+**Update, Nov 27, 2026:** Steps 14b and 18 done (one overnight chain); results in Sec 4.0 and
+Steps 14 and 18. CNN RL is the project's first positive RL result (+76 with search over its
+SFT start), but more SFT (pass 2) still matched or beat it. A GPU-utilization measurement for
+the headline rows is added as Step 11 support (Derek): AlphaZero self-play ran at ~0-2% GPU.
 
 ---
 
@@ -222,10 +226,10 @@ valid; new work took the next free numbers (12–16); final analysis was already
 and always runs last. A renumbering in running order was considered and not done
 (Oct 31).
 
-### 4.0 Where things stand and what runs next (Nov 26, Derek)
+### 4.0 Where things stand and what runs next (Nov 26, Derek; updated Nov 27)
 
-**Done:** Steps 0–7, 9, 12 (incl. the eval panel), 13, 14a (LLM SFT on 500k), 16, 17. Steps 12
-and 17 merged into `main` (Nov 26).
+**Done:** Steps 0–7, 9, 12 (incl. the eval panel), 13, 14 (LLM SFT on 500k + CNN SFT), 16, 17,
+18. Steps 12 and 17 merged into `main` (Nov 26); Steps 14 and 18 merge next (Nov 27).
 
 **Headline results, every row on the full panel (Step 12f):**
 
@@ -237,13 +241,17 @@ and 17 merged into `main` (Nov 26).
 | LLM SFT 50k @15k | 4.61 | 669 [636, 702] | — |
 | AlphaZero CNN r109 (from scratch) | 18.04 | 666 [633, 698] | 733 [707, 761] (rung, 50 sims) |
 | LLM RL run 4 @r20 | 16.56 | 662 [633, 691] | — |
+| **CNN SFT 500k, pass 2** (Step 14b) | 0.008 | 742 [705, 779] | **890** [846, 938] (50 sims) |
+| **CNN RL from CNN SFT pass 1, r136** (Step 18) | 19.33 | 698 [673, 727] | **859** [822, 904] (50 sims) |
+| **CNN SFT 500k, pass 1** (Step 14b) | 0.003 | 662 [633, 691] | 783 [742, 822] (50 sims) |
 
 **Order from here** (supersedes the order above and the Nov 1 table):
 
 | # | Work | Pod | Gate / output | Est. |
 |---|---|---|---|---|
-| 1 | **Step 14b CNN SFT + Step 18 CNN RL, one overnight chain:** smoke tests → CNN SFT on 500k (2 passes) → auto-check → panel evals of CNN SFT pass 1 and 2, each ± search → CNN RL from pass 1 to 19.3 total GPU-h → panel evals of its final checkpoint ± search → pod stops | one L4 pod | Steps 14 and 18 gates → merge into `main` | ~24–26 h, ~$15 |
-| 2 | **Step 11:** final analysis + slides | laptop | slides | 0 |
+| 1 | ~~**Step 14b CNN SFT + Step 18 CNN RL, one overnight chain**~~ — done Nov 27; both gates met | one L4 pod | merge into `main` | ~24 h |
+| 2 | **GPU utilization of the headline rows** (Step 11 support, Derek Nov 27): `eval/gpu_util.py` | one L4 pod, restarted | one line per row in Sec 4.0 | ~30 min, ~$0.30 |
+| 3 | **Step 11:** final analysis + slides | laptop | slides | 0 |
 
 Dropped (Derek, Nov 26): a 50k CNN SFT run, a ~2M dataset, more re-rates of old curve
 points, a second LLM self-play run. Watchdogs: whenever the number of running pods changes,
@@ -539,6 +547,16 @@ side. *Branch:* `step-14-sft-scale`.
   the 50k run, the 2M dataset, the 10 × 128 network.
 - **CNN SFT evals:** pass 1 and pass 2, each **with and without search** (50 simulations,
   AlphaZero's setting), on the full panel. These also fill the CNN half of Step 15.
+  *Done (Nov 27):* run `cnn_b6c64_n500000_e2_s0`, on the panel (120 games each):
+
+  | checkpoint | training GPU-h | no search | with search (50 sims) | search gain |
+  |---|---|---|---|---|
+  | pass 1 | 0.003 | 662 [633, 691] | 783 [742, 822] | +121 |
+  | pass 2 | 0.008 | 742 [705, 779] | **890** [846, 938] | +148 |
+
+  The CNN learns from the same labels as well as the LLM: pass 2 with search (890) ties LLM
+  SFT @62.5k with search (895) at ~2,500× less training compute. Without search the CNN is
+  below the LLM at both passes (662 vs. 735; 742 vs. 775).
 - **LLM SFT on 500k:** the Step 5 recipe unchanged (same prompt, LoRA, value head, loss,
   learning rate, batch size), only the data grows. Cost estimate from Step 5 (~52k
   examples per GPU-h): one pass over 500k ≈ 9.6 GPU-h; over 2M ≈ 38 GPU-h.
@@ -769,6 +787,29 @@ mirroring Step 17 for the LLM; also an SFT start vs. a random start for AlphaZer
 *Gate:* trained to ≈ 19.3 total GPU-h; the final checkpoint rated on the panel with and without
 search.
 
+*Done (Nov 27): gate met.* Run `az_b6c64_s0_cnnsft_p1`, 136 rounds, 19.33 GPU-h (incl.
+0.003 of CNN SFT). Final checkpoint r136 on the panel (120 games each):
+
+| comparison | no search | with search (50 sims) |
+|---|---|---|
+| **CNN RL r136** | **698** [673, 727] | **859** [822, 904] |
+| vs. its start, CNN SFT pass 1 (662 / 783) | +36 (borderline, ~1.8σ) | **+76** (~2.6σ) |
+| vs. CNN SFT pass 2 (742 / 890) | −44 (~1.9σ) | −31 (within noise) |
+| vs. AlphaZero from scratch r109 (666 / 733) | +32 | **+126** |
+
+(σ: the difference over the combined standard error, both from the CIs.) Readout: RL improved
+the network (the project's first positive RL result), mostly in play with search (search gain
++161 vs. +121 at its start: the value head, trained on game results, seems to help search
+most); more SFT (pass 2) still matched or beat it at a tiny fraction of the GPU-h; an SFT
+start is worth +126 with search over random weights at equal compute. Training signals: value
+loss 0.59 → 0.48 by ~r10, policy loss rose then recovered (2.42 → 2.52 at ~r30 → 2.43 at
+r66), entropy steady ~2.4–2.5, repetition endings rising (2 → 20–34 per 128 games); the final
+checkpoint drew 48 of 120 panel games with search.
+**Caveat (measured Nov 27):** during this run the GPU sat at ~0–2% utilization with one CPU
+core at 100% (Python MCTS, `search/mcts.py`): the GPU-h bought mostly CPU time, so this is a
+lower bound on what AlphaZero's recipe gets from 19 GPU-h. Utilization per headline row:
+Step 11 support item; parallel self-play: Sec 5 item 13.
+
 ### Deferred
 
 - **Step 8 — 2×2 sweep** (mask × representation), deferred since Oct 17.
@@ -788,16 +829,41 @@ search.
   moves/game × rate).
 - Illegal-move rate for unmasked arms, only if the 2×2 returns.
 - Optional: more games for the arms on the final slides.
+- **GPU utilization per headline row (support item, Derek Nov 27).** GPU-h is the compute
+  unit of every comparison, but a GPU-hour isn't equally busy in every arm (AlphaZero
+  self-play measured ~0–2%). Per row: utilization = (self-play h × u_selfplay + update h ×
+  u_update) ÷ total h.
+  - *Known* (logs on the volume): per round `selfplay_seconds`, `update_seconds`, `positions`
+    in `checkpoints/llm_rl/<run>/rl_log.csv`, `checkpoints/llm_mcts/<run>/mcts_log.csv`,
+    `checkpoints/alphazero/<run>/az_log.csv`; Step 7's `stockfish_seconds` (CPU only, counted
+    at 0% GPU; it sits inside `selfplay_seconds` and inside GPU-h).
+  - *Measured* (new): u_selfplay and u_update per arm, by replaying a short slice with the real
+    config and checkpoint (full game count, ~20 moves; ~30 update steps) while `nvidia-smi`
+    samples utilization every second.
+  - *Assumed:* the slice is representative (checked: seconds per position vs. the log's mean;
+    flagged if off by > 25%); the slice misses each round's small-batch tail, so u_selfplay is
+    slightly high; `nvidia-smi` utilization = % of time any kernel runs (standard, generous);
+    same GPU type (L4) as the original runs.
+  - *Rows:* (1) LLM SFT 500k (@30k and @62.5k; measured: ~30 SFT steps from @62.5k; also used
+    for the SFT parts of rows 2–3 and for LLM SFT 50k, which ran on Colab: an assumption);
+    (2) self-play LLM, Step 17 round 4; (3) LLM RL run 4 @r20; (4) AlphaZero from scratch
+    r109; (5) CNN RL from CNN SFT, r136. Not measured: CNN SFT (0.003–0.008 GPU-h).
+  - *Code:* `eval/gpu_util.py` (`split`: logs only, CPU; `measure`: GPU replay; `combine`),
+    run from a notebook cell on a restarted L4 pod (~30 min, ~$0.30). *Output:* one line per
+    row in Sec 4.0 (no new results file).
 
 ### The project's goals (Derek, Nov 26) and the research questions behind them
 
 1. **Power of scaffolding (search):** what play-time MCTS adds to each network (Q3). *LLM:
-   +120–130 at every checkpoint (Steps 15, 17); AlphaZero CNN: +67. CNN SFT: Step 14b.*
+   +120–130 at every checkpoint (Steps 15, 17); AlphaZero CNN: +67. CNN SFT: +121 / +148
+   (passes 1 / 2); CNN RL from SFT: +161 (Steps 14b, 18).*
 2. **Power of SFT:** imitation of Stockfish's labels, and how it scales with data (Q2). *LLM:
-   669 (50k) → 735 → 775 (500k, 1 and 2 passes). CNN: Step 14b.*
+   669 (50k) → 735 → 775 (500k, 1 and 2 passes). CNN (500k): 662 → 742 without search, 783 →
+   890 with (passes 1 and 2), at 0.003–0.008 GPU-h (Step 14b).*
 3. **Power of RL:** does learning from game results improve on an SFT start, at equal
    compute (Q4)? *LLM: no (plain RL flat; self-play with search lost to more SFT, Step 17).
-   CNN: Step 18.*
+   CNN: yes vs. its start (+36 / +76 without / with search), but more SFT matched or beat it
+   (Step 18); AlphaZero's GPU-h were mostly idle GPU (Step 18 caveat).*
 
 Plus Q1, architecture: CNN vs. LLM on identical data and compute (Step 14b vs. 14a, Step 18 vs.
 17), on Elo vs. GPU-hours.
@@ -833,3 +899,9 @@ Plus Q1, architecture: CNN vs. LLM on identical data and compute (Step 14b vs. 1
     in-place edit marked `> Update (v5)`).
 12. ~~Step 17's training details~~ — decided Nov 1 (Step 17: 64 games/round, no KL, last
     3 rounds, 2x per position at SFT's learning rate).
+13. **Parallel self-play for the AlphaZero arms (found Nov 27).** AlphaZero self-play is
+    single-threaded Python (one core at 100%, GPU ~0–2%; the L4 pod has 6 vCPUs). Options:
+    (a) keep the results as they are and report the caveat; (b) parallel self-play across the
+    cores (plausibly ~4–5× the games per GPU-h), then re-run both CNN RL arms (from scratch and
+    from SFT) at ~19.3 GPU-h so they stay comparable (~2 × $11.40 + build time). Decide after
+    the utilization numbers (Step 11 support).

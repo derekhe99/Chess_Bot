@@ -148,6 +148,13 @@ Rules:
     batch 256, 2 passes, pass 1 and 2 rated on the panel ± search) and new Step 18 CNN RL from
     CNN SFT pass 1 to ~19.3 total GPU-h (AlphaZero settings), one overnight chain with an
     auto-check. Then Step 11. 50k CNN, 2M data, 10 x 128 network dropped.
+  - Nov 27: Steps 14b and 18 done, gates met (run on one pod overnight). CNN SFT 500k
+    (`cnn_b6c64_n500000_e2_s0`): pass 1 662 / 783 with search, pass 2 742 / 890 (0.003 / 0.008
+    GPU-h). CNN RL from pass 1 (`az_b6c64_s0_cnnsft_p1`, r136, 19.33 GPU-h): 698 / 859 (+36 /
+    +76 over its start; −44 / −31 vs. pass 2; +126 with search over AlphaZero from scratch).
+    AlphaZero self-play measured at ~0–2% GPU, one CPU core at 100% (plan Sec 5 item 13).
+    Next: merge `step-14-sft-scale` into `main`; then GPU utilization of the headline rows
+    (`eval/gpu_util.py`, plan Step 11 support), then Step 11.
 
 ## How code runs (one source of truth per thing)
 
